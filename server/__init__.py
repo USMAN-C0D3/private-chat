@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from flask import Flask
+from flask_socketio import SocketIO
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+from .accounts import load_private_accounts
+from .config import Config
+from .routes import register_routes
+from .runtime import get_async_mode
+from .security import LoginRateLimiter
+from .services import create_chat_services
+from .sockets import register_socket_events
+
+
+socketio: SocketIO | None = None
+
+
+def create_app(config_object: type[Config] | None = None) -> Flask:
+    global socketio
+
+    app = Flask(__name__)
+    app.config.from_object(config_object or Config)
+    app.config["PRIVATE_ACCOUNTS"] = app.config.get("PRIVATE_ACCOUNTS") or load_private_accounts(app.config["APP_ENV"])
+
+    if app.config["APP_ENV"] == "production" and app.config["SECRET_KEY"] == "change-me-in-production":
+        raise RuntimeError("SECRET_KEY must be set when APP_ENV=production.")
+
+    if app.config.get("TRUST_PROXY_HEADERS"):
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
+
+    socketio = SocketIO(
+        app,
+        async_mode=get_async_mode(),
+        cors_allowed_origins=app.config["SOCKET_IO_CORS_ORIGINS"],
+        cors_credentials=True,
+        manage_session=False,
+        logger=False,
+        engineio_logger=False,
+        ping_interval=app.config["SOCKET_IO_PING_INTERVAL"],
+        ping_timeout=app.config["SOCKET_IO_PING_TIMEOUT"],
+        max_http_buffer_size=app.config["SOCKET_IO_MAX_HTTP_BUFFER_SIZE"],
+    )
+
+    app.extensions["login_rate_limiter"] = LoginRateLimiter(
+        max_attempts=app.config["LOGIN_RATE_LIMIT_MAX_ATTEMPTS"],
+        window_seconds=app.config["LOGIN_RATE_LIMIT_WINDOW_SECONDS"],
+    )
+    register_routes(app)
+    app.extensions["chat_services"] = create_chat_services(app.config, socketio)
+    register_socket_events(socketio)
+
+    @app.after_request
+    def apply_security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+
+        if app.config["APP_ENV"] == "production":
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+        if response.direct_passthrough:
+            return response
+
+        if response.content_type.startswith("application/json"):
+            response.headers.setdefault("Cache-Control", "no-store")
+
+        return response
+
+    app.extensions["socketio"] = socketio
+    return app
