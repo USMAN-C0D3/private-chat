@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 
 # ✅ ONLY load local env in development
-if os.getenv("APP_ENV") != "production":
-    from local_env import load_local_env
-    load_local_env()
+try:
+    if os.environ.get("APP_ENV") != "production":
+        from local_env import load_local_env
+        load_local_env()
+except Exception:
+    pass
 
 from server.runtime import get_async_mode
 
