@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import os
 
+
+print("APP_ENV =", os.environ.get("APP_ENV"))
+print("USER1 =", os.environ.get("PRIVATE_ACCOUNT_1_USERNAME"))
+print("PASS1 =", os.environ.get("PRIVATE_ACCOUNT_1_PASSWORD"))
+print("PASS2 =", os.environ.get("PRIVATE_ACCOUNT_2_PASSWORD"))
+
 # ✅ ONLY load local env in development
 try:
     if os.environ.get("APP_ENV") != "production":
