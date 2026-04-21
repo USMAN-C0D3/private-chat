@@ -19,15 +19,37 @@ class PostgresChatStore:
 
     @contextmanager
     def _connection(self):
-        connection = self._pool.getconn()
+        connection = None
         try:
+            connection = self._pool.getconn()
+
+            # Validate the pooled connection before use.
+            try:
+                health_cursor = connection.cursor()
+                health_cursor.execute("SELECT 1")
+                health_cursor.close()
+            except Exception:
+                try:
+                    self._pool.putconn(connection, close=True)
+                except Exception:
+                    pass
+                connection = self._pool.getconn()
+
             yield connection
             connection.commit()
         except Exception:
-            connection.rollback()
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
             raise
         finally:
-            self._pool.putconn(connection)
+            if connection is not None:
+                try:
+                    self._pool.putconn(connection, close=False)
+                except Exception:
+                    pass
 
     @staticmethod
     def _timestamp(value: Any) -> str:
