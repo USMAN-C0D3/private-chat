@@ -5,6 +5,7 @@ import { getChatSocket } from "@/lib/socket";
 import type {
   ChatErrorPayload,
   ChatMessage,
+  ChatReplyTarget,
   ChatStatePayload,
   MessagesReadPayload,
   PresencePayload,
@@ -37,7 +38,7 @@ interface UseChatRoomState {
   partnerLastReadId: number | null;
   error: string | null;
   loadOlder: () => Promise<void>;
-  sendMessage: (text: string) => boolean;
+  sendMessage: (text: string, replyTo?: ChatReplyTarget | null) => boolean;
   setTypingActive: (active: boolean) => void;
   markRead: (messageId: number) => void;
   clearError: () => void;
@@ -361,7 +362,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     }
   }
 
-  function sendMessage(text: string) {
+  function sendMessage(text: string, replyTo: ChatReplyTarget | null = null) {
     const socket = getChatSocket();
     if (!socket.connected) {
       if (!socket.active) {
@@ -371,7 +372,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       return false;
     }
 
-    socket.emit("send_message", { text });
+    socket.emit("send_message", { text, replyTo });
     return true;
   }
 

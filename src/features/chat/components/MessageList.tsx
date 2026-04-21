@@ -1,9 +1,12 @@
 import {
   forwardRef,
   memo,
+  useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
+  useState,
   type Ref,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -38,6 +41,7 @@ interface MessageListProps {
   onBottomChange: (isAtBottom: boolean) => void;
   onToggleHeart: (messageId: number) => void;
   onSelectReaction: (messageId: number, emoji: string) => void;
+  onSwipeReply: (message: ChatMessage) => void;
 }
 
 
@@ -59,10 +63,12 @@ function MessageListInner(
     onBottomChange,
     onToggleHeart,
     onSelectReaction,
+    onSwipeReply,
   }: MessageListProps,
   ref: Ref<MessageListHandle>,
 ) {
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
+  const [swipeEnabled, setSwipeEnabled] = useState(false);
 
   const virtualizer = useVirtualizer({
     count: messages.length,
@@ -113,6 +119,57 @@ function MessageListInner(
     };
   }, [onBottomChange]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const media = window.matchMedia("(max-width: 768px), (pointer: coarse)");
+    const update = () => setSwipeEnabled(media.matches);
+    update();
+
+    media.addEventListener("change", update);
+    return () => {
+      media.removeEventListener("change", update);
+    };
+  }, []);
+
+  const messageIndexById = useMemo(() => {
+    const map = new Map<number, number>();
+    messages.forEach((message, index) => {
+      map.set(message.id, index);
+    });
+    return map;
+  }, [messages]);
+
+  const handleReplyNavigate = useCallback(
+    (targetMessageId: number) => {
+      const targetIndex = messageIndexById.get(targetMessageId);
+      if (targetIndex === undefined) {
+        return;
+      }
+
+      virtualizer.scrollToIndex(targetIndex, {
+        align: "center",
+        behavior: "smooth",
+      });
+
+      window.setTimeout(() => {
+        const targetElement = document.getElementById(`message-${targetMessageId}`);
+        if (!targetElement) {
+          return;
+        }
+
+        targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+        targetElement.classList.add("ring-2", "ring-amber-300/70", "bg-amber-100/10", "rounded-2xl", "transition-colors");
+        window.setTimeout(() => {
+          targetElement.classList.remove("ring-2", "ring-amber-300/70", "bg-amber-100/10", "rounded-2xl", "transition-colors");
+        }, 1400);
+      }, 220);
+    },
+    [messageIndexById, virtualizer],
+  );
+
   const connectionLabel =
     connectionState === "connected"
       ? "Conversation"
@@ -122,7 +179,7 @@ function MessageListInner(
 
   return (
     <div className="relative z-[1] flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-none bg-transparent">
-      <div className="flex items-center justify-between gap-3 border-b border-white/8 px-4 py-4 text-[11px] font-semibold uppercase tracking-[0.2em] text-white/45 sm:px-5">
+      <div className="flex items-center justify-between gap-3 border-b border-white/8 px-4 py-4 text-[11px] font-semibold uppercase tracking-[0.2em] text-white/45 sm:px-5 sm:py-[1.125rem]">
         <span className="truncate">{connectionLabel}</span>
         <button
           type="button"
@@ -152,7 +209,7 @@ function MessageListInner(
           </p>
         </div>
       ) : (
-        <div ref={scrollParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4 sm:py-4">
+        <div ref={scrollParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-4.5">
           <div
             className="relative w-full"
             style={{
@@ -174,8 +231,9 @@ function MessageListInner(
                 <div
                   key={message.id}
                   ref={virtualizer.measureElement}
+                  id={`message-${message.id}`}
                   data-index={virtualItem.index}
-                  className="absolute left-0 top-0 w-full px-1 py-1.5"
+                  className="absolute left-0 top-0 w-full px-1 py-2"
                   style={{
                     contain: "layout paint style",
                     transform: `translateY(${virtualItem.start}px)`,
@@ -192,10 +250,13 @@ function MessageListInner(
                     isGroupedWithPrevious={isGroupedWithPrevious}
                     isGroupedWithNext={isGroupedWithNext}
                     message={message}
+                    onReplyNavigate={handleReplyNavigate}
                     onSelectReaction={onSelectReaction}
+                    onSwipeReply={onSwipeReply}
                     onToggleHeart={onToggleHeart}
                     partnerDisplayName={partnerDisplayName}
                     reaction={reactions[message.id] ?? null}
+                    swipeEnabled={swipeEnabled}
                   />
                 </div>
               );

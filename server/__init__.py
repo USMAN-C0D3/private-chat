@@ -32,6 +32,14 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     app.config["PRIVATE_ACCOUNTS"] = app.config.get("PRIVATE_ACCOUNTS") or load_private_accounts(app.config["APP_ENV"])
 
+    if app.config["APP_ENV"] == "production":
+        database_path = str(app.config.get("DATABASE_PATH", ""))
+        if not database_path.startswith("/var/data/"):
+            app.logger.warning(
+                "DATABASE_URL resolves to '%s'. On Render, use a sqlite URL/path under /var/data for persistent storage.",
+                database_path,
+            )
+
     if app.config["APP_ENV"] == "production" and app.config["SECRET_KEY"] == "change-me-in-production":
         raise RuntimeError("SECRET_KEY must be set when APP_ENV=production.")
 

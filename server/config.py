@@ -8,6 +8,35 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _sqlite_path_from_database_url(database_url: str) -> Path:
+    value = database_url.strip()
+    if value.startswith("sqlite:///"):
+        return Path(value.removeprefix("sqlite:///"))
+
+    if value.startswith("sqlite://"):
+        return Path(value.removeprefix("sqlite://"))
+
+    # Allow plain paths for operational simplicity.
+    return Path(value)
+
+
+def default_database_url(app_env: str) -> str:
+    env_url = os.getenv("DATABASE_URL", "").strip()
+    if env_url:
+        return env_url
+
+    # Backward-compatibility fallback. DATABASE_URL is preferred.
+    legacy_path = os.getenv("DATABASE_PATH", "").strip()
+    if legacy_path:
+        return legacy_path
+
+    # Render persistent disk mount point. Falls back to local instance in non-production.
+    if app_env == "production":
+        return "sqlite:////var/data/private_chat.sqlite3"
+
+    return f"sqlite:///{BASE_DIR / 'instance' / 'private_chat.sqlite3'}"
+
+
 def getenv_bool(name: str, default: bool = False) -> bool:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -45,13 +74,14 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
     TRUST_PROXY_HEADERS = getenv_bool("TRUST_PROXY_HEADERS", APP_ENV == "production")
 
-    DATABASE_PATH = Path(getenv_str("DATABASE_PATH", str(BASE_DIR / "instance" / "private_chat.sqlite3")))
+    DATABASE_URL = default_database_url(APP_ENV)
+    DATABASE_PATH = _sqlite_path_from_database_url(DATABASE_URL)
 
     SESSION_COOKIE_NAME = "private_chat_session"
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = getenv_str(
         "SESSION_COOKIE_SAMESITE",
-        "Lax",
+        "None" if APP_ENV == "production" else "Lax",
     )
     SESSION_COOKIE_SECURE = getenv_bool("SESSION_COOKIE_SECURE", APP_ENV == "production")
     PERMANENT_SESSION_LIFETIME = timedelta(days=7)

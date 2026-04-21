@@ -1,4 +1,5 @@
 import { CheckCheck } from "lucide-react";
+import { useSwipeable } from "react-swipeable";
 import {
   memo,
   useCallback,
@@ -28,6 +29,7 @@ interface MessageBubbleProps {
   message: ChatMessage;
   isOwn: boolean;
   partnerDisplayName: string;
+  swipeEnabled: boolean;
   reaction: string | null;
   isSeen: boolean;
   deliveryState: "sent" | "read" | null;
@@ -35,6 +37,8 @@ interface MessageBubbleProps {
   isGroupedWithNext: boolean;
   onToggleHeart: (messageId: number) => void;
   onSelectReaction: (messageId: number, emoji: string) => void;
+  onSwipeReply: (message: ChatMessage) => void;
+  onReplyNavigate: (messageId: number) => void;
 }
 
 
@@ -42,6 +46,7 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   isOwn,
   partnerDisplayName,
+  swipeEnabled,
   reaction,
   isSeen,
   deliveryState,
@@ -49,8 +54,12 @@ export const MessageBubble = memo(function MessageBubble({
   isGroupedWithNext,
   onToggleHeart,
   onSelectReaction,
+  onSwipeReply,
+  onReplyNavigate,
 }: MessageBubbleProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [dragX, setDragX] = useState(0);
+  const [isSwiping, setIsSwiping] = useState(false);
   const lastTapTimestampRef = useRef(0);
   const longPressTimeoutRef = useRef<number | null>(null);
   const suppressDoubleClickUntilRef = useRef(0);
@@ -71,6 +80,15 @@ export const MessageBubble = memo(function MessageBubble({
   const toggleHeartReaction = useCallback(() => {
     onToggleHeart(message.id);
   }, [message.id, onToggleHeart]);
+  const replyPreviewText = useMemo(() => {
+    if (!message.replyTo?.text) {
+      return null;
+    }
+
+    return message.replyTo.text.length > 90
+      ? `${message.replyTo.text.slice(0, 87)}...`
+      : message.replyTo.text;
+  }, [message.replyTo?.text]);
 
   useEffect(() => {
     return () => {
@@ -153,6 +171,58 @@ export const MessageBubble = memo(function MessageBubble({
     setPickerOpen((current) => !current);
   }, []);
 
+  const swipeHandlers = useSwipeable({
+    disabled: !swipeEnabled,
+    trackMouse: false,
+    trackTouch: true,
+    preventScrollOnSwipe: false,
+    delta: 50,
+    onSwiping: ({ dir, deltaX, deltaY }) => {
+      const canReplyFromThisDirection = (isOwn && dir === "Left") || (!isOwn && dir === "Right");
+      if (!canReplyFromThisDirection) {
+        return;
+      }
+
+      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+        return;
+      }
+
+      setIsSwiping(true);
+      const nextDragX = isOwn ? -Math.min(Math.abs(deltaX), 88) : Math.min(Math.abs(deltaX), 88);
+      setDragX(nextDragX);
+    },
+    onSwiped: () => {
+      setIsSwiping(false);
+      setDragX(0);
+    },
+    onSwipedLeft: ({ deltaX, deltaY }) => {
+      if (!isOwn) {
+        return;
+      }
+
+      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+        return;
+      }
+
+      if (Math.abs(deltaX) >= 64) {
+        onSwipeReply(message);
+      }
+    },
+    onSwipedRight: ({ deltaX, deltaY }) => {
+      if (isOwn) {
+        return;
+      }
+
+      if (Math.abs(deltaY) > Math.abs(deltaX)) {
+        return;
+      }
+
+      if (Math.abs(deltaX) >= 64) {
+        onSwipeReply(message);
+      }
+    },
+  });
+
   return (
     <div className={`flex w-full ${isOwn ? "justify-end" : "justify-start"} ${isGroupedWithPrevious ? "-mt-1" : ""}`}>
       {!isOwn ? (
@@ -161,9 +231,9 @@ export const MessageBubble = memo(function MessageBubble({
         </div>
       ) : null}
 
-      <div className={`group relative flex max-w-[80%] flex-col sm:max-w-[74%] ${isOwn ? "items-end" : "items-start"}`}>
+      <div className={`group relative flex max-w-[85%] flex-col sm:max-w-[76%] ${isOwn ? "items-end" : "items-start"}`}>
         {!isGroupedWithPrevious ? (
-          <div className="mb-1.5 px-1 text-[11px] font-medium tracking-[0.01em] text-white/52">
+          <div className="mb-2 px-1 text-[11px] font-medium tracking-[0.01em] text-white/52 sm:mb-1.5">
             {isOwn ? "You" : partnerDisplayName} {"\u2022"} {timestamp}
           </div>
         ) : (
@@ -172,21 +242,26 @@ export const MessageBubble = memo(function MessageBubble({
 
         <div className="relative flex items-end gap-2">
           <div
+            {...swipeHandlers}
             onContextMenu={handleContextMenu}
             onDoubleClick={handleDoubleClick}
             onPointerCancel={handlePointerCancel}
             onPointerDown={handlePointerDown}
             onPointerUp={handlePointerUp}
-            className={`bubble-gloss relative rounded-[1.5rem] px-[0.95rem] py-[0.58rem] text-[14px] leading-[1.5] shadow-[0_12px_30px_rgba(0,0,0,0.18)] transition-all duration-200 sm:px-[1.05rem] sm:py-[0.66rem] sm:text-[14.5px] sm:leading-[1.53] ${
+            className={`bubble-gloss relative rounded-[1.8rem] px-4 py-3 text-[15px] leading-[1.65] shadow-[0_14px_34px_rgba(0,0,0,0.2)] transition-all duration-200 will-change-transform sm:rounded-[1.65rem] sm:px-[1.05rem] sm:py-[0.72rem] sm:text-[14.5px] sm:leading-[1.55] ${
               isOwn
-                ? `bubble-self bg-[linear-gradient(135deg,#8b5cf6,#3b82f6)] text-white animate-in fade-in slide-in-from-bottom-2 duration-300 ${
-                    isGroupedWithPrevious ? "rounded-tr-[1rem]" : "rounded-br-md"
-                  } ${isGroupedWithNext ? "rounded-br-[0.7rem]" : "rounded-br-md"}`
-                : `bubble-other text-slate-100 animate-in fade-in slide-in-from-bottom-2 duration-300 ${
-                    isGroupedWithPrevious ? "rounded-tl-[1rem]" : "rounded-bl-md"
-                  } ${isGroupedWithNext ? "rounded-bl-[0.7rem]" : "rounded-bl-md"}`
+                ? `bubble-self border border-white/20 bg-[linear-gradient(135deg,#7c3aed_0%,#4f46e5_45%,#3b82f6_100%)] text-white shadow-[0_14px_34px_rgba(79,70,229,0.34),0_0_0_1px_rgba(255,255,255,0.06)] animate-in fade-in slide-in-from-bottom-2 duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                    isGroupedWithPrevious ? "rounded-tr-[1.1rem]" : "rounded-br-[1rem]"
+                  } ${isGroupedWithNext ? "rounded-br-[0.9rem]" : "rounded-br-[1rem]"}`
+                : `bubble-other border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.11),rgba(255,255,255,0.07))] text-slate-50 shadow-[0_10px_24px_rgba(0,0,0,0.18)] backdrop-blur-[2px] animate-in fade-in slide-in-from-bottom-2 duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                    isGroupedWithPrevious ? "rounded-tl-[1.1rem]" : "rounded-bl-[1rem]"
+                  } ${isGroupedWithNext ? "rounded-bl-[0.9rem]" : "rounded-bl-[1rem]"}`
             } touch-manipulation`}
-            style={{ animationDelay: `${entranceDelayMs}ms` }}
+            style={{
+              animationDelay: `${entranceDelayMs}ms`,
+              transform: dragX !== 0 ? `translateX(${dragX}px)` : undefined,
+              transition: isSwiping ? "none" : "transform 280ms cubic-bezier(0.22, 1, 0.36, 1)",
+            }}
           >
             {pickerOpen ? (
               <div className={`absolute ${isOwn ? "right-0" : "left-0"} bottom-full mb-2 flex max-w-[min(15rem,calc(100vw-4rem))] gap-1 rounded-full border border-white/10 bg-[#13151c]/96 px-2 py-2 shadow-[0_20px_40px_rgba(0,0,0,0.28)]`}>
@@ -204,6 +279,21 @@ export const MessageBubble = memo(function MessageBubble({
                   </button>
                 ))}
               </div>
+            ) : null}
+
+            {replyPreviewText && message.replyTo ? (
+              <button
+                type="button"
+                onClick={() => onReplyNavigate(message.replyTo.id)}
+                className={`mb-2.5 block w-full rounded-2xl border-l-2 px-3 py-2 text-left text-[11px] leading-4 transition ${
+                  isOwn
+                    ? "border-white/60 bg-white/16 text-white/95 hover:bg-white/22"
+                    : "border-cyan-200/35 bg-white/10 text-white/85 hover:bg-white/14"
+                }`}
+              >
+                <div className="font-semibold tracking-[0.02em] text-[10px] uppercase opacity-85">Replying to</div>
+                <div className="mt-1 break-words whitespace-pre-wrap">{replyPreviewText}</div>
+              </button>
             ) : null}
 
             <p className="whitespace-pre-wrap break-words tracking-[0.002em]">{message.text}</p>

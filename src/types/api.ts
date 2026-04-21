@@ -1,10 +1,16 @@
 export type Username = string;
 
+export interface ChatReplyTarget {
+  id: number;
+  text: string;
+}
+
 export interface ChatMessage {
   id: number;
   sender: string;
   text: string;
   timestamp: string;
+  replyTo?: ChatReplyTarget | null;
 }
 
 export interface LoginCredentials {

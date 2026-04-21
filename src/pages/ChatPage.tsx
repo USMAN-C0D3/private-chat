@@ -19,6 +19,7 @@ import { MessageList, type MessageListHandle } from "@/features/chat/components/
 import { useBotControlInternal } from "@/features/chat/hooks/useBotControl";
 import { useChatRoom } from "@/features/chat/hooks/useChatRoom";
 import { useChatWallpaper } from "@/features/chat/hooks/useChatWallpaper";
+import type { ChatMessage, ChatReplyTarget } from "@/types/api";
 
 
 function formatNewMessagesLabel(count: number) {
@@ -35,6 +36,7 @@ export function ChatPage() {
   const navigate = useNavigate();
   const { user, userDisplayName, partnerDisplayName: authPartnerDisplayName, logout } = useAuth();
   const [draft, setDraft] = useState("");
+  const [replyTarget, setReplyTarget] = useState<ChatReplyTarget | null>(null);
   const [reactions, setReactions] = useState<Record<number, string | null>>({});
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -243,19 +245,31 @@ export function ChatPage() {
       return;
     }
 
-    const sent = sendMessage(text);
+    const sent = sendMessage(text, replyTarget);
     if (!sent) {
       return;
     }
 
     setDraft("");
+    setReplyTarget(null);
     setTypingActive(false);
     setNewMessageCount(0);
 
     if (typingTimeoutRef.current !== null) {
       window.clearTimeout(typingTimeoutRef.current);
     }
-  }, [draft, sendMessage, setTypingActive]);
+  }, [draft, replyTarget, sendMessage, setTypingActive]);
+
+  const handleSwipeReply = useCallback((message: ChatMessage) => {
+    setReplyTarget({
+      id: message.id,
+      text: message.text,
+    });
+  }, []);
+
+  const handleCancelReply = useCallback(() => {
+    setReplyTarget(null);
+  }, []);
 
   const handleLogout = useCallback(async () => {
     await logout();
@@ -347,24 +361,24 @@ export function ChatPage() {
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 px-3 pb-3 pt-[max(env(safe-area-inset-top),0.75rem)] sm:px-4">
-          <div className="topbar-luxe mx-auto flex w-full max-w-4xl items-center justify-between gap-3 rounded-[1.25rem] px-3 py-2.5 sm:px-4 sm:py-3">
-            <div className="flex min-w-0 items-center gap-4 pr-2">
+          <div className="topbar-luxe mx-auto flex w-full max-w-4xl items-center justify-between gap-3 rounded-[1.4rem] px-3.5 py-3 sm:px-4 sm:py-3.5">
+            <div className="flex min-w-0 items-center gap-3.5 pr-1 sm:gap-4">
               <button
                 type="button"
                 onClick={() => navigate("/inbox")}
-                className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/8"
+                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full text-white/90 transition hover:bg-white/8 active:scale-95"
                 aria-label="Go back"
               >
-                <ArrowLeft className="h-5 w-5" />
+                <ArrowLeft className="h-[1.375rem] w-[1.375rem]" />
               </button>
 
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-white">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-sm font-semibold text-white shadow-[0_10px_22px_rgba(0,0,0,0.2)]">
                 {initialsFor(activePartnerDisplayName)}
               </div>
 
               <div className="min-w-0">
-                <div className="flex max-w-full items-center gap-2.5">
-                  <div className="truncate text-sm font-semibold text-white sm:text-base">
+                <div className="flex min-w-0 max-w-full items-center gap-2.5">
+                  <div className="max-w-[120px] truncate text-base font-semibold text-white sm:max-w-[200px] sm:text-[1.02rem]">
                     {activePartnerDisplayName}
                   </div>
                   {newMessageCount > 0 ? (
@@ -375,8 +389,8 @@ export function ChatPage() {
                     />
                   ) : null}
                 </div>
-                <div className="mt-2.5 flex min-w-0 items-center gap-3">
-                  <div className="inline-flex min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/7 px-3 py-1.5 text-[11px] font-semibold text-white/70 shadow-[0_12px_26px_rgba(0,0,0,0.18)] backdrop-blur-xl sm:text-xs">
+                <div className="mt-2 flex min-w-0 items-center gap-3">
+                  <div className="inline-flex min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/7 px-3.5 py-[0.4375rem] text-[11px] font-semibold text-white/70 shadow-[0_12px_26px_rgba(0,0,0,0.18)] backdrop-blur-xl sm:text-xs">
                     <span className={`h-2 w-2 flex-shrink-0 rounded-full ${isPartnerOnline ? "bg-emerald-400" : "bg-white/25"}`} />
                     <span className="truncate">{connectionLabel}</span>
                   </div>
@@ -384,7 +398,7 @@ export function ChatPage() {
               </div>
             </div>
 
-            <div className="ml-2 flex flex-shrink-0 items-center gap-2 sm:ml-5">
+            <div className="ml-2 flex flex-shrink-0 items-center gap-2 sm:ml-5 sm:gap-2.5">
               <input
                 ref={wallpaperInputRef}
                 type="file"
@@ -396,7 +410,7 @@ export function ChatPage() {
                 type="button"
                 onClick={() => wallpaperInputRef.current?.click()}
                 disabled={isWallpaperProcessing}
-                className="rounded-full border border-white/10 bg-white/7 px-3 py-2 text-xs font-semibold text-white/85 shadow-[0_12px_24px_rgba(0,0,0,0.18)] backdrop-blur-xl transition hover:bg-white/10 disabled:cursor-wait disabled:opacity-70 sm:text-sm"
+                className="rounded-full border border-white/10 bg-white/7 px-3.5 py-2.5 text-xs font-semibold text-white/85 shadow-[0_12px_24px_rgba(0,0,0,0.18)] backdrop-blur-xl transition hover:bg-white/10 active:scale-95 disabled:cursor-wait disabled:opacity-70 sm:text-sm"
                 aria-label={wallpaperUrl ? "Change wallpaper" : "Upload wallpaper"}
               >
                 <span className="inline-flex items-center gap-2">
@@ -408,7 +422,7 @@ export function ChatPage() {
                 <button
                   type="button"
                   onClick={clearWallpaper}
-                  className="rounded-full border border-white/10 bg-white/7 px-3 py-2 text-xs font-semibold text-white/85 shadow-[0_12px_24px_rgba(0,0,0,0.18)] backdrop-blur-xl transition hover:bg-white/10 sm:text-sm"
+                  className="rounded-full border border-white/10 bg-white/7 px-3.5 py-2.5 text-xs font-semibold text-white/85 shadow-[0_12px_24px_rgba(0,0,0,0.18)] backdrop-blur-xl transition hover:bg-white/10 active:scale-95 sm:text-sm"
                   aria-label="Remove wallpaper"
                 >
                   <span className="inline-flex items-center gap-2">
@@ -428,7 +442,7 @@ export function ChatPage() {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/10 sm:text-sm"
+                className="rounded-full border border-white/10 bg-white/5 px-3.5 py-2.5 text-xs font-semibold text-white transition hover:bg-white/10 active:scale-95 sm:text-sm"
               >
                 <span className="inline-flex items-center gap-2">
                   <LogOut className="h-4 w-4" />
@@ -494,6 +508,7 @@ export function ChatPage() {
               onBottomChange={handleBottomChange}
               onLoadOlder={loadOlder}
               onSelectReaction={handleSelectReaction}
+              onSwipeReply={handleSwipeReply}
               onToggleHeart={handleToggleHeart}
               partnerDisplayName={activePartnerDisplayName}
               partnerLastReadId={partnerLastReadId}
@@ -504,7 +519,7 @@ export function ChatPage() {
           </div>
         </main>
 
-        <div className="z-20 border-t border-white/8 bg-[linear-gradient(180deg,rgba(15,16,20,0.25),rgba(15,16,20,0.92)_32%,rgba(15,16,20,1))] px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 sm:px-4">
+        <div className="z-20 border-t border-white/8 bg-[linear-gradient(180deg,rgba(15,16,20,0.18),rgba(15,16,20,0.92)_32%,rgba(15,16,20,1))] px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 sm:px-4">
           <div className="mx-auto w-full max-w-4xl">
             {!isAtBottom || newMessageCount > 0 ? (
               <div className="mb-2 flex justify-center">
@@ -535,8 +550,10 @@ export function ChatPage() {
               connectionLabel={composerStatusLabel}
               disabled={connectionState === "disconnected"}
               draft={draft}
+              onCancelReply={handleCancelReply}
               onDraftChange={handleDraftChange}
               onSubmit={handleSend}
+              replyTarget={replyTarget}
             />
           </div>
         </div>

@@ -152,6 +152,23 @@ class BackendIntegrationTests(unittest.TestCase):
             self.assertTrue(receive_two)
 
             message_id = receive_two[0]["args"][0]["message"]["id"]
+            socket_two.get_received()
+
+            socket_two.emit(
+                "send_message",
+                {
+                    "text": "reply from aisha",
+                    "replyTo": {"id": message_id, "text": "hello from usman"},
+                },
+            )
+
+            reply_events = socket_one.get_received() + socket_two.get_received()
+            reply_messages = [event for event in reply_events if event["name"] == "receive_message"]
+            self.assertTrue(reply_messages)
+            reply_payload = reply_messages[-1]["args"][0]["message"]
+            self.assertEqual(reply_payload["replyTo"]["id"], message_id)
+            self.assertEqual(reply_payload["replyTo"]["text"], "hello from usman")
+
             socket_two.emit("mark_read", {"messageId": message_id})
 
             read_events_one = socket_one.get_received()

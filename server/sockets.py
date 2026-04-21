@@ -108,6 +108,7 @@ def register_socket_events(socketio: SocketIO) -> None:
 
             data = payload or {}
             text = str(data.get("text", "")).strip()
+            reply_to_payload = data.get("replyTo")
 
             if not text:
                 emit("chat_error", {"message": "Message text is required."})
@@ -121,8 +122,25 @@ def register_socket_events(socketio: SocketIO) -> None:
                 )
                 return
 
+            normalized_reply_to: dict[str, Any] | None = None
+            if isinstance(reply_to_payload, dict):
+                raw_reply_id = reply_to_payload.get("id")
+                raw_reply_text = str(reply_to_payload.get("text", "")).strip()
+                try:
+                    parsed_reply_id = int(raw_reply_id)
+                except (TypeError, ValueError):
+                    parsed_reply_id = None
+
+                if parsed_reply_id is not None and parsed_reply_id > 0 and raw_reply_text:
+                    normalized_reply_to = {
+                        "id": parsed_reply_id,
+                        "text": raw_reply_text[:max_length],
+                    }
+
             services = get_chat_services()
-            message = services.store.append(username, text)
+            message = services.store.append(username, text, reply_to=normalized_reply_to)
+            if normalized_reply_to is not None:
+                message["replyTo"] = normalized_reply_to
             socketio.emit(
                 "receive_message",
                 {"message": message},

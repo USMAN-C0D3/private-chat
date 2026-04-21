@@ -22,7 +22,9 @@ def init_store_database(database_path: str | Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sender TEXT NOT NULL,
                 text TEXT NOT NULL,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                reply_to_id INTEGER,
+                reply_to_text TEXT
             );
 
             CREATE TABLE IF NOT EXISTS read_receipts (
@@ -40,6 +42,7 @@ def init_store_database(database_path: str | Path) -> None:
             );
             """
         )
+        _ensure_reply_columns(connection)
         connection.commit()
     finally:
         connection.close()
@@ -53,12 +56,36 @@ def _configure_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA busy_timeout=30000")
 
 
+def _ensure_reply_columns(connection: sqlite3.Connection) -> None:
+    table_info = connection.execute("PRAGMA table_info(messages)").fetchall()
+    existing_columns = {str(row["name"]) for row in table_info}
+
+    if "reply_to_id" not in existing_columns:
+        connection.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER")
+
+    if "reply_to_text" not in existing_columns:
+        connection.execute("ALTER TABLE messages ADD COLUMN reply_to_text TEXT")
+
+
+@dataclass(slots=True, frozen=True)
+class ChatReplyTo:
+    id: int
+    text: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "text": self.text,
+        }
+
+
 @dataclass(slots=True, frozen=True)
 class ChatMessage:
     id: int
     sender: str
     text: str
     timestamp: str
+    reply_to: ChatReplyTo | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -66,6 +93,7 @@ class ChatMessage:
             "sender": self.sender,
             "text": self.text,
             "timestamp": self.timestamp,
+            "replyTo": self.reply_to.to_payload() if self.reply_to else None,
         }
 
 
@@ -75,8 +103,44 @@ class ChatStore:
         self._max_messages = max_messages
         self._write_lock = Lock()
 
-    def append(self, sender: str, text: str) -> dict[str, Any]:
-        return self.append_many(sender, [text])[0]
+    def append(self, sender: str, text: str, reply_to: dict[str, Any] | None = None) -> dict[str, Any]:
+        normalized_text = str(text)
+        if not normalized_text:
+            raise ValueError("Message text is required")
+
+        reply_to_id: int | None = None
+        reply_to_text: str | None = None
+        if isinstance(reply_to, dict):
+            raw_id = reply_to.get("id")
+            raw_text = str(reply_to.get("text", "")).strip()
+            try:
+                parsed_id = int(raw_id)
+            except (TypeError, ValueError):
+                parsed_id = None
+
+            if parsed_id and parsed_id > 0 and raw_text:
+                reply_to_id = parsed_id
+                reply_to_text = raw_text
+
+        with self._write_lock, self._connection() as connection:
+            timestamp = self._utc_now()
+            cursor = connection.execute(
+                "INSERT INTO messages (sender, text, timestamp, reply_to_id, reply_to_text) VALUES (?, ?, ?, ?, ?)",
+                (sender, normalized_text, timestamp, reply_to_id, reply_to_text),
+            )
+            self._trim_messages(connection)
+
+            return ChatMessage(
+                id=int(cursor.lastrowid),
+                sender=sender,
+                text=normalized_text,
+                timestamp=timestamp,
+                reply_to=(
+                    ChatReplyTo(id=reply_to_id, text=reply_to_text)
+                    if reply_to_id is not None and reply_to_text is not None
+                    else None
+                ),
+            ).to_payload()
 
     def append_many(self, sender: str, texts: Iterable[str]) -> list[dict[str, Any]]:
         sanitized_texts = [str(text) for text in texts if str(text)]
@@ -88,7 +152,7 @@ class ChatStore:
             for text in sanitized_texts:
                 timestamp = self._utc_now()
                 cursor = connection.execute(
-                    "INSERT INTO messages (sender, text, timestamp) VALUES (?, ?, ?)",
+                    "INSERT INTO messages (sender, text, timestamp, reply_to_id, reply_to_text) VALUES (?, ?, ?, NULL, NULL)",
                     (sender, text, timestamp),
                 )
                 payloads.append(
@@ -106,7 +170,7 @@ class ChatStore:
     def latest(self) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT id, sender, text, timestamp FROM messages ORDER BY id DESC LIMIT 1"
+                "SELECT id, sender, text, timestamp, reply_to_id, reply_to_text FROM messages ORDER BY id DESC LIMIT 1"
             ).fetchone()
             return self._row_to_payload(row)
 
@@ -120,7 +184,7 @@ class ChatStore:
     def recent_page(self, limit: int) -> tuple[list[dict[str, Any]], bool, int | None]:
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT id, sender, text, timestamp FROM messages ORDER BY id DESC LIMIT ?",
+                "SELECT id, sender, text, timestamp, reply_to_id, reply_to_text FROM messages ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
             if not rows:
@@ -139,6 +203,7 @@ class ChatStore:
             rows = connection.execute(
                 """
                 SELECT id, sender, text, timestamp
+                , reply_to_id, reply_to_text
                 FROM messages
                 WHERE id < ?
                 ORDER BY id DESC
@@ -215,6 +280,11 @@ class ChatStore:
             sender=str(row["sender"]),
             text=str(row["text"]),
             timestamp=str(row["timestamp"]),
+            reply_to=(
+                ChatReplyTo(id=int(row["reply_to_id"]), text=str(row["reply_to_text"]))
+                if row["reply_to_id"] is not None and row["reply_to_text"] is not None
+                else None
+            ),
         ).to_payload()
 
     @staticmethod
