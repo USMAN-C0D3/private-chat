@@ -6,7 +6,7 @@ import sqlite3
 from flask import Flask
 from flask_socketio import SocketIO
 from werkzeug.middleware.proxy_fix import ProxyFix
-from flask_cors import CORS   # 🔥 ADDED
+from flask_cors import CORS
 
 from .accounts import load_private_accounts
 from .config import Config
@@ -27,7 +27,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_object(config_object or Config)
 
-    # 🔥 CORS FIX (CRITICAL)
+    # ✅ CORS
     CORS(
         app,
         supports_credentials=True,
@@ -36,20 +36,27 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     app.config["PRIVATE_ACCOUNTS"] = app.config.get("PRIVATE_ACCOUNTS") or load_private_accounts(app.config["APP_ENV"])
 
-    if app.config["APP_ENV"] == "production":
-        database_path = str(app.config.get("DATABASE_PATH", ""))
-        if not database_path.startswith("/var/data/"):
-            raise RuntimeError(
-                "DATABASE_URL must resolve under /var/data in production for persistent sqlite storage. "
-                f"Current resolved path: {database_path}"
-            )
+    db_url = app.config["DATABASE_URL"]
 
+    # ✅ FIX: Only enforce /var/data for SQLite
+    if db_url.startswith("sqlite"):
+        database_path = str(app.config.get("DATABASE_PATH", ""))
+
+        if app.config["APP_ENV"] == "production":
+            if not database_path.startswith("/var/data/"):
+                raise RuntimeError(
+                    "SQLite must be under /var/data in production."
+                )
+
+    # ✅ SECRET KEY CHECK
     if app.config["APP_ENV"] == "production" and app.config["SECRET_KEY"] == "change-me-in-production":
         raise RuntimeError("SECRET_KEY must be set when APP_ENV=production.")
 
+    # ✅ Proxy
     if app.config.get("TRUST_PROXY_HEADERS"):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
+    # ✅ SocketIO (NO eventlet required)
     socketio = SocketIO(
         app,
         async_mode=get_async_mode(),
@@ -70,7 +77,10 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     register_routes(app)
     app.extensions["chat_services"] = create_chat_services(app.config, socketio)
-    _validate_database_connection(str(app.config["DATABASE_PATH"]))
+
+    # ✅ FIX: Validate DB correctly based on type
+    _validate_database_connection(db_url, app.config.get("DATABASE_PATH"))
+
     register_socket_events(socketio)
 
     @app.after_request
@@ -95,13 +105,29 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     return app
 
 
-def _validate_database_connection(database_path: str) -> None:
+def _validate_database_connection(database_url: str, database_path: str | None) -> None:
     try:
-        connection = sqlite3.connect(database_path, timeout=10)
-        try:
-            connection.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
-        finally:
-            connection.close()
+        # ✅ Handle SQLite
+        if database_url.startswith("sqlite") and database_path:
+            connection = sqlite3.connect(database_path, timeout=10)
+            try:
+                connection.execute("SELECT 1").fetchone()
+            finally:
+                connection.close()
+
+        # ✅ Handle Postgres (Supabase)
+        elif database_url.startswith("postgresql"):
+            import psycopg2
+
+            conn = psycopg2.connect(database_url)
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+                cur.close()
+            finally:
+                conn.close()
+
     except Exception as caught_error:
         logger.exception("Database startup check failed")
         raise RuntimeError("Database connection failed") from caught_error
