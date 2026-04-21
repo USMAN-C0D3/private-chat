@@ -60,7 +60,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     if app.config.get("TRUST_PROXY_HEADERS"):
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
-    # ✅ SocketIO (NO eventlet required)
+    # ✅ SocketIO configuration
     socketio = SocketIO(
         app,
         async_mode=get_async_mode(),
@@ -115,18 +115,24 @@ def _validate_database_connection(database_url: str, database_path: str | None) 
         if database_url.startswith("sqlite") and database_path:
             connection = sqlite3.connect(database_path, timeout=10)
             try:
-                connection.execute("SELECT 1").fetchone()
+                connection.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
             finally:
                 connection.close()
 
         # ✅ Handle Postgres (Supabase)
         elif database_url.startswith("postgresql"):
-            import psycopg2
+            try:
+                import psycopg2  # type: ignore[import-not-found]
+            except ImportError as import_error:
+                raise RuntimeError(
+                    "PostgreSQL URL detected but psycopg2 is not installed. "
+                    "Run 'pip install -r requirements.txt'."
+                ) from import_error
 
             conn = psycopg2.connect(database_url)
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT 1")
+                cur.execute("SELECT 1 FROM messages LIMIT 1")
                 cur.fetchone()
                 cur.close()
             finally:
