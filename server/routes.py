@@ -351,10 +351,12 @@ def _serve_spa_shell():
     index_file = dist_dir / "index.html"
 
     if not index_file.exists():
-        return (
-            "Frontend build not found. Run `npm run build` so Flask can serve the SPA shell.",
-            503,
-            {"Content-Type": "text/plain; charset=utf-8"},
+        return jsonify(
+            {
+                "status": "ok",
+                "message": "Backend is running",
+                "frontend": "not-built",
+            }
         )
 
     return send_from_directory(dist_dir, "index.html", max_age=0)
