@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-import tempfile
+import shutil
 import time
 import unittest
 from datetime import timedelta
@@ -15,8 +15,9 @@ from server.accounts import PrivateAccount
 
 class BackendIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory()
-        database_path = Path(self.temp_dir.name) / "test.sqlite3"
+        self.test_root = Path.cwd() / ".tmp-tests" / f"run-{int(time.time() * 1000)}"
+        self.test_root.mkdir(parents=True, exist_ok=True)
+        database_path = self.test_root / "test.sqlite3"
 
         class TestConfig:
             APP_ENV = "testing"
@@ -68,7 +69,7 @@ class BackendIntegrationTests(unittest.TestCase):
         self.socketio = self.app.extensions["socketio"]
 
     def tearDown(self) -> None:
-        self.temp_dir.cleanup()
+        shutil.rmtree(self.test_root, ignore_errors=True)
 
     def _csrf_token(self, client) -> str:
         response = client.get("/api/auth/session")
@@ -150,8 +151,13 @@ class BackendIntegrationTests(unittest.TestCase):
 
             self.assertTrue(receive_one)
             self.assertTrue(receive_two)
+            self.assertEqual(len(receive_one), 1)
+            self.assertEqual(len(receive_two), 1)
 
             message_id = receive_two[0]["args"][0]["message"]["id"]
+            message_sequence = receive_two[0]["args"][0]["message"]["sequence"]
+            self.assertIsInstance(message_id, str)
+            self.assertIsInstance(receive_two[0]["args"][0]["message"]["timestamp"], int)
             socket_two.get_received()
 
             socket_two.emit(
@@ -169,7 +175,7 @@ class BackendIntegrationTests(unittest.TestCase):
             self.assertEqual(reply_payload["replyTo"]["id"], message_id)
             self.assertEqual(reply_payload["replyTo"]["text"], "hello from usman")
 
-            socket_two.emit("mark_read", {"messageId": message_id})
+            socket_two.emit("mark_read", {"messageId": message_sequence})
 
             read_events_one = socket_one.get_received()
             read_events_two = socket_two.get_received()
@@ -178,12 +184,12 @@ class BackendIntegrationTests(unittest.TestCase):
 
             self.assertTrue(receipt_events)
             self.assertEqual(receipt_events[-1]["args"][0]["reader"], "aisha")
-            self.assertEqual(receipt_events[-1]["args"][0]["messageId"], message_id)
+            self.assertEqual(receipt_events[-1]["args"][0]["messageId"], message_sequence)
         finally:
             socket_one.disconnect()
             socket_two.disconnect()
 
-    def test_bot_emits_batched_messages(self) -> None:
+    def test_bot_emits_live_messages(self) -> None:
         admin_client = self.app.test_client()
         login_response = self._login(admin_client, "usman", "usman-secret")
         self.assertEqual(login_response.status_code, 200)
@@ -218,7 +224,7 @@ class BackendIntegrationTests(unittest.TestCase):
                         break
                 time.sleep(0.05)
 
-            self.assertTrue(any(event["name"] == "receive_messages" for event in received_events))
+            self.assertTrue(any(event["name"] == "receive_message" for event in received_events))
             self.assertTrue(any(event["name"] == "bot_stopped" for event in received_events))
         finally:
             socket_client.disconnect()

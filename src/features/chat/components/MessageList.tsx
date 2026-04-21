@@ -34,14 +34,14 @@ interface MessageListProps {
   hasMore: boolean;
   loadingOlder: boolean;
   connectionState: ConnectionState;
-  seenMessageId: number | null;
-  latestOwnMessageId: number | null;
+  seenMessageId: string | null;
+  latestOwnMessageId: string | null;
   partnerLastReadId: number | null;
-  reactions: Record<number, string | null>;
+  reactions: Record<string, string | null>;
   onLoadOlder: () => Promise<void>;
   onBottomChange: (isAtBottom: boolean) => void;
-  onToggleHeart: (messageId: number) => void;
-  onSelectReaction: (messageId: number, emoji: string) => void;
+  onToggleHeart: (messageId: string) => void;
+  onSelectReaction: (messageId: string, emoji: string) => void;
   onSwipeReply: (message: ChatMessage) => void;
 }
 
@@ -137,7 +137,7 @@ function MessageListInner(
   }, []);
 
   const messageIndexById = useMemo(() => {
-    const map = new Map<number, number>();
+    const map = new Map<string, number>();
     messages.forEach((message, index) => {
       map.set(message.id, index);
     });
@@ -145,7 +145,7 @@ function MessageListInner(
   }, [messages]);
 
   const handleReplyNavigate = useCallback(
-    (targetMessageId: number) => {
+    (targetMessageId: string) => {
       const targetIndex = messageIndexById.get(targetMessageId);
       if (targetIndex === undefined) {
         return;
@@ -251,7 +251,7 @@ function MessageListInner(
                   <MessageBubble
                     deliveryState={
                       message.sender === currentUser && message.id === latestOwnMessageId
-                        ? (partnerLastReadId !== null && message.id <= partnerLastReadId ? "read" : "sent")
+                        ? (partnerLastReadId !== null && message.sequence <= partnerLastReadId ? "read" : "sent")
                         : null
                     }
                     isOwn={message.sender === currentUser}

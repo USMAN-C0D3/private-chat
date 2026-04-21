@@ -4,7 +4,9 @@ import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from threading import Lock
+import time
 from typing import Any
+from uuid import uuid4
 
 from flask import current_app
 from flask_socketio import SocketIO
@@ -26,30 +28,39 @@ class InMemoryChatStore:
     def __init__(self, *, max_messages: int) -> None:
         self._max_messages = max_messages
         self._messages: list[dict[str, Any]] = []
-        self._next_id = 1
+        self._next_sequence = 1
         self._total_count = 0
         self._lock = Lock()
 
     @staticmethod
-    def _utc_now() -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    def _timestamp_ms() -> int:
+        return int(time.time() * 1000)
 
     def _trim(self) -> None:
         if len(self._messages) > self._max_messages:
             overflow = len(self._messages) - self._max_messages
             del self._messages[:overflow]
 
-    def append(self, sender: str, text: str, reply_to: dict[str, Any] | None = None) -> dict[str, Any]:
+    def append(
+        self,
+        sender: str,
+        text: str,
+        reply_to: dict[str, Any] | None = None,
+        *,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             message = {
-                "id": self._next_id,
+                "id": str(uuid4()),
+                "sequence": self._next_sequence,
                 "sender": sender,
                 "text": str(text),
-                "timestamp": self._utc_now(),
+                "timestamp": self._timestamp_ms(),
+                "clientId": client_id,
                 "replyTo": reply_to,
             }
             self._messages.append(message)
-            self._next_id += 1
+            self._next_sequence += 1
             self._total_count += 1
             self._trim()
             return dict(message)
@@ -71,7 +82,7 @@ class InMemoryChatStore:
         with self._lock:
             if not self._messages:
                 return None
-            return int(self._messages[-1]["id"])
+            return int(self._messages[-1]["sequence"])
 
     def recent_page(self, limit: int) -> tuple[list[dict[str, Any]], bool, int | None]:
         with self._lock:
@@ -79,17 +90,17 @@ class InMemoryChatStore:
                 return [], False, None
             page = self._messages[-limit:]
             has_more = len(self._messages) > len(page)
-            next_cursor = int(page[0]["id"]) if has_more else None
+            next_cursor = int(page[0]["sequence"]) if has_more else None
             return [dict(row) for row in page], has_more, next_cursor
 
     def before_page(self, before_id: int, limit: int) -> tuple[list[dict[str, Any]], bool, int | None]:
         with self._lock:
-            eligible = [row for row in self._messages if int(row["id"]) < before_id]
+            eligible = [row for row in self._messages if int(row["sequence"]) < before_id]
             if not eligible:
                 return [], False, None
             page = eligible[-limit:]
             has_more = len(eligible) > len(page)
-            next_cursor = int(page[0]["id"]) if has_more else None
+            next_cursor = int(page[0]["sequence"]) if has_more else None
             return [dict(row) for row in page], has_more, next_cursor
 
     def stats(self) -> dict[str, int]:

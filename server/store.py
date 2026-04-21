@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
+import time
 from typing import Any, Iterable
+from uuid import uuid4
 
 
 def init_store_database(database_path: str | Path) -> None:
@@ -20,10 +22,13 @@ def init_store_database(database_path: str | Path) -> None:
             """
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_id TEXT UNIQUE,
                 sender TEXT NOT NULL,
                 text TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
                 reply_to_id INTEGER,
+                reply_to_public_id TEXT,
+                client_id TEXT,
                 reply_to_text TEXT
             );
 
@@ -60,16 +65,50 @@ def _ensure_reply_columns(connection: sqlite3.Connection) -> None:
     table_info = connection.execute("PRAGMA table_info(messages)").fetchall()
     existing_columns = {str(row["name"]) for row in table_info}
 
+    if "public_id" not in existing_columns:
+        connection.execute("ALTER TABLE messages ADD COLUMN public_id TEXT")
+
     if "reply_to_id" not in existing_columns:
         connection.execute("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER")
+
+    if "reply_to_public_id" not in existing_columns:
+        connection.execute("ALTER TABLE messages ADD COLUMN reply_to_public_id TEXT")
 
     if "reply_to_text" not in existing_columns:
         connection.execute("ALTER TABLE messages ADD COLUMN reply_to_text TEXT")
 
+    if "client_id" not in existing_columns:
+        connection.execute("ALTER TABLE messages ADD COLUMN client_id TEXT")
+
+    rows_missing_public_id = connection.execute(
+        "SELECT id FROM messages WHERE public_id IS NULL OR public_id = ''"
+    ).fetchall()
+    for row in rows_missing_public_id:
+        connection.execute(
+            "UPDATE messages SET public_id = ? WHERE id = ?",
+            (str(uuid4()), int(row["id"])),
+        )
+
+    connection.execute(
+        """
+        UPDATE messages
+        SET reply_to_public_id = (
+            SELECT parent.public_id
+            FROM messages AS parent
+            WHERE parent.id = messages.reply_to_id
+        )
+        WHERE reply_to_public_id IS NULL
+          AND reply_to_id IS NOT NULL
+        """
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_public_id ON messages(public_id)"
+    )
+
 
 @dataclass(slots=True, frozen=True)
 class ChatReplyTo:
-    id: int
+    id: str
     text: str
 
     def to_payload(self) -> dict[str, Any]:
@@ -81,18 +120,22 @@ class ChatReplyTo:
 
 @dataclass(slots=True, frozen=True)
 class ChatMessage:
-    id: int
+    id: str
+    sequence: int
     sender: str
     text: str
-    timestamp: str
+    timestamp: int
+    client_id: str | None = None
     reply_to: ChatReplyTo | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "sequence": self.sequence,
             "sender": self.sender,
             "text": self.text,
             "timestamp": self.timestamp,
+            "clientId": self.client_id,
             "replyTo": self.reply_to.to_payload() if self.reply_to else None,
         }
 
@@ -103,41 +146,69 @@ class ChatStore:
         self._max_messages = max_messages
         self._write_lock = Lock()
 
-    def append(self, sender: str, text: str, reply_to: dict[str, Any] | None = None) -> dict[str, Any]:
+    def append(
+        self,
+        sender: str,
+        text: str,
+        reply_to: dict[str, Any] | None = None,
+        *,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
         normalized_text = str(text)
         if not normalized_text:
             raise ValueError("Message text is required")
 
         reply_to_id: int | None = None
+        reply_to_public_id: str | None = None
         reply_to_text: str | None = None
         if isinstance(reply_to, dict):
             raw_id = reply_to.get("id")
             raw_text = str(reply_to.get("text", "")).strip()
-            try:
-                parsed_id = int(raw_id)
-            except (TypeError, ValueError):
-                parsed_id = None
+            parsed_id = str(raw_id).strip() or None
 
-            if parsed_id and parsed_id > 0 and raw_text:
-                reply_to_id = parsed_id
+            if parsed_id and raw_text:
+                reply_to_public_id = parsed_id
                 reply_to_text = raw_text
 
         with self._write_lock, self._connection() as connection:
-            timestamp = self._utc_now()
+            if reply_to_public_id:
+                parent_row = connection.execute(
+                    "SELECT id FROM messages WHERE public_id = ? LIMIT 1",
+                    (reply_to_public_id,),
+                ).fetchone()
+                if parent_row is not None:
+                    reply_to_id = int(parent_row["id"])
+
+            timestamp = self._timestamp_ms()
+            public_id = str(uuid4())
             cursor = connection.execute(
-                "INSERT INTO messages (sender, text, timestamp, reply_to_id, reply_to_text) VALUES (?, ?, ?, ?, ?)",
-                (sender, normalized_text, timestamp, reply_to_id, reply_to_text),
+                """
+                INSERT INTO messages (
+                    public_id,
+                    sender,
+                    text,
+                    timestamp,
+                    reply_to_id,
+                    reply_to_public_id,
+                    client_id,
+                    reply_to_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (public_id, sender, normalized_text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text),
             )
             self._trim_messages(connection)
 
             return ChatMessage(
-                id=int(cursor.lastrowid),
+                id=public_id,
+                sequence=int(cursor.lastrowid),
                 sender=sender,
                 text=normalized_text,
                 timestamp=timestamp,
+                client_id=client_id,
                 reply_to=(
-                    ChatReplyTo(id=reply_to_id, text=reply_to_text)
-                    if reply_to_id is not None and reply_to_text is not None
+                    ChatReplyTo(id=reply_to_public_id, text=reply_to_text)
+                    if reply_to_public_id is not None and reply_to_text is not None
                     else None
                 ),
             ).to_payload()
@@ -150,14 +221,19 @@ class ChatStore:
         with self._write_lock, self._connection() as connection:
             payloads: list[dict[str, Any]] = []
             for text in sanitized_texts:
-                timestamp = self._utc_now()
+                timestamp = self._timestamp_ms()
+                public_id = str(uuid4())
                 cursor = connection.execute(
-                    "INSERT INTO messages (sender, text, timestamp, reply_to_id, reply_to_text) VALUES (?, ?, ?, NULL, NULL)",
-                    (sender, text, timestamp),
+                    """
+                    INSERT INTO messages (public_id, sender, text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text)
+                    VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL)
+                    """,
+                    (public_id, sender, text, timestamp),
                 )
                 payloads.append(
                     ChatMessage(
-                        id=int(cursor.lastrowid),
+                        id=public_id,
+                        sequence=int(cursor.lastrowid),
                         sender=sender,
                         text=text,
                         timestamp=timestamp,
@@ -170,7 +246,12 @@ class ChatStore:
     def latest(self) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT id, sender, text, timestamp, reply_to_id, reply_to_text FROM messages ORDER BY id DESC LIMIT 1"
+                """
+                SELECT id, public_id, sender, text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text
+                FROM messages
+                ORDER BY id DESC
+                LIMIT 1
+                """
             ).fetchone()
             return self._row_to_payload(row)
 
@@ -184,7 +265,12 @@ class ChatStore:
     def recent_page(self, limit: int) -> tuple[list[dict[str, Any]], bool, int | None]:
         with self._connection() as connection:
             rows = connection.execute(
-                "SELECT id, sender, text, timestamp, reply_to_id, reply_to_text FROM messages ORDER BY id DESC LIMIT ?",
+                """
+                SELECT id, public_id, sender, text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text
+                FROM messages
+                ORDER BY id DESC
+                LIMIT ?
+                """,
                 (limit,),
             ).fetchall()
             if not rows:
@@ -202,8 +288,7 @@ class ChatStore:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT id, sender, text, timestamp
-                , reply_to_id, reply_to_text
+                SELECT id, public_id, sender, text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text
                 FROM messages
                 WHERE id < ?
                 ORDER BY id DESC
@@ -276,20 +361,41 @@ class ChatStore:
             return None
 
         return ChatMessage(
-            id=int(row["id"]),
+            id=str(row["public_id"] or row["id"]),
+            sequence=int(row["id"]),
             sender=str(row["sender"]),
             text=str(row["text"]),
-            timestamp=str(row["timestamp"]),
+            timestamp=ChatStore._normalize_timestamp(row["timestamp"]),
+            client_id=(str(row["client_id"]) if row["client_id"] is not None else None),
             reply_to=(
-                ChatReplyTo(id=int(row["reply_to_id"]), text=str(row["reply_to_text"]))
-                if row["reply_to_id"] is not None and row["reply_to_text"] is not None
+                ChatReplyTo(
+                    id=str(row["reply_to_public_id"] or row["reply_to_id"]),
+                    text=str(row["reply_to_text"]),
+                )
+                if (row["reply_to_public_id"] is not None or row["reply_to_id"] is not None) and row["reply_to_text"] is not None
                 else None
             ),
         ).to_payload()
 
     @staticmethod
-    def _utc_now() -> str:
-        return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    def _timestamp_ms() -> int:
+        return int(time.time() * 1000)
+
+    @staticmethod
+    def _normalize_timestamp(value: Any) -> int:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            if value.isdigit():
+                return int(value)
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return int(parsed.timestamp() * 1000)
+            except ValueError:
+                return ChatStore._timestamp_ms()
+        return ChatStore._timestamp_ms()
 
 
 class ReadReceiptStore:

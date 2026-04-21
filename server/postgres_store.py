@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import importlib
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from threading import Lock
 from typing import Any, Iterable
+from uuid import uuid4
 
 
 def _connection_pool_class():
@@ -16,6 +20,7 @@ class PostgresChatStore:
         self._max_messages = max_messages
         self._pool = _connection_pool_class()(1, 10, dsn=database_url)
         self._write_lock = Lock()
+        self._ensure_schema()
 
     @contextmanager
     def _connection(self):
@@ -23,7 +28,6 @@ class PostgresChatStore:
         try:
             connection = self._pool.getconn()
 
-            # Validate the pooled connection before use.
             try:
                 health_cursor = connection.cursor()
                 health_cursor.execute("SELECT 1")
@@ -51,47 +55,96 @@ class PostgresChatStore:
                 except Exception:
                     pass
 
-    @staticmethod
-    def _timestamp(value: Any) -> str:
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return str(value)
+    def _ensure_schema(self) -> None:
+        with self._connection() as conn:
+            cur = conn.cursor()
+            cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS public_id TEXT")
+            cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_public_id TEXT")
+            cur.execute("ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_id TEXT")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_public_id ON messages(public_id)")
+            cur.execute("SELECT id FROM messages WHERE public_id IS NULL OR public_id = ''")
+            rows = cur.fetchall()
+            for row in rows:
+                cur.execute(
+                    "UPDATE messages SET public_id = %s WHERE id = %s",
+                    (str(uuid4()), int(row[0])),
+                )
+            cur.execute(
+                """
+                UPDATE messages AS child
+                SET reply_to_public_id = parent.public_id
+                FROM messages AS parent
+                WHERE child.reply_to_public_id IS NULL
+                  AND child.reply_to_id = parent.id
+                """
+            )
+            cur.close()
 
-    def append(self, sender: str, text: str, reply_to=None):
+    @staticmethod
+    def _timestamp_ms(value: Any = None) -> int:
+        if value is None:
+            return int(time.time() * 1000)
+        if isinstance(value, datetime):
+            return int(value.timestamp() * 1000)
+        if isinstance(value, (int, float)):
+            return int(value)
+        value_as_text = str(value)
+        if value_as_text.isdigit():
+            return int(value_as_text)
+        try:
+            return int(datetime.fromisoformat(value_as_text.replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            return int(time.time() * 1000)
+
+    def append(
+        self,
+        sender: str,
+        text: str,
+        reply_to: dict[str, Any] | None = None,
+        *,
+        client_id: str | None = None,
+    ):
         reply_to_id = None
+        reply_to_public_id = None
         reply_to_text = None
 
         if isinstance(reply_to, dict):
-            try:
-                reply_to_id = int(reply_to.get("id"))
-                reply_to_text = str(reply_to.get("text", ""))
-            except:
-                pass
+            reply_to_public_id = str(reply_to.get("id", "")).strip() or None
+            reply_to_text = str(reply_to.get("text", "")).strip() or None
 
         with self._write_lock, self._connection() as conn:
             cur = conn.cursor()
+            if reply_to_public_id:
+                cur.execute("SELECT id FROM messages WHERE public_id = %s LIMIT 1", (reply_to_public_id,))
+                row = cur.fetchone()
+                if row:
+                    reply_to_id = int(row[0])
+
+            public_id = str(uuid4())
+            timestamp = self._timestamp_ms()
             cur.execute(
                 """
-                INSERT INTO messages (sender, text, reply_to_id, reply_to_text)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id, created_at, reply_to_id, reply_to_text
+                INSERT INTO messages (public_id, sender, text, reply_to_id, reply_to_public_id, reply_to_text, client_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at
                 """,
-                (sender, text, reply_to_id, reply_to_text),
+                (public_id, sender, text, reply_to_id, reply_to_public_id, reply_to_text, client_id),
             )
-
-            msg_id, created_at, r_id, r_text = cur.fetchone()
+            sequence_id, created_at = cur.fetchone()
             cur.close()
 
             self._trim_messages(conn)
 
         return {
-            "id": msg_id,
+            "id": public_id,
+            "sequence": int(sequence_id),
             "sender": sender,
             "text": text,
-            "timestamp": self._timestamp(created_at),
+            "timestamp": self._timestamp_ms(created_at) if created_at is not None else timestamp,
+            "clientId": client_id,
             "replyTo": (
-                {"id": r_id, "text": r_text}
-                if r_id is not None and r_text is not None
+                {"id": reply_to_public_id, "text": reply_to_text}
+                if reply_to_public_id is not None and reply_to_text is not None
                 else None
             ),
         }
@@ -110,7 +163,7 @@ class PostgresChatStore:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT id, sender, text, created_at, reply_to_id, reply_to_text
+                SELECT id, public_id, sender, text, created_at, reply_to_id, reply_to_public_id, client_id, reply_to_text
                 FROM messages
                 ORDER BY id DESC
                 LIMIT %s
@@ -121,16 +174,59 @@ class PostgresChatStore:
             cur.close()
 
         rows.reverse()
-
         messages = [self._row_to_payload(r) for r in rows]
-        return messages, False, None
+        if not messages:
+            return [], False, None
+
+        with self._connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM messages ORDER BY id ASC LIMIT 1")
+            oldest = cur.fetchone()
+            cur.close()
+
+        oldest_id = int(oldest[0]) if oldest else None
+        has_more = bool(messages and oldest_id is not None and messages[0]["sequence"] > oldest_id)
+        next_cursor = messages[0]["sequence"] if has_more else None
+        return messages, has_more, next_cursor
+
+    def before_page(self, before_id: int, limit: int):
+        with self._connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, public_id, sender, text, created_at, reply_to_id, reply_to_public_id, client_id, reply_to_text
+                FROM messages
+                WHERE id < %s
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (before_id, limit),
+            )
+            rows = cur.fetchall()
+            cur.close()
+
+        rows.reverse()
+        messages = [self._row_to_payload(r) for r in rows]
+        if not messages:
+            return [], False, None
+
+        with self._connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM messages ORDER BY id ASC LIMIT 1")
+            oldest = cur.fetchone()
+            cur.close()
+
+        oldest_id = int(oldest[0]) if oldest else None
+        has_more = bool(messages and oldest_id is not None and messages[0]["sequence"] > oldest_id)
+        next_cursor = messages[0]["sequence"] if has_more else None
+        return messages, has_more, next_cursor
 
     def latest(self):
         with self._connection() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT id, sender, text, created_at, reply_to_id, reply_to_text
+                SELECT id, public_id, sender, text, created_at, reply_to_id, reply_to_public_id, client_id, reply_to_text
                 FROM messages
                 ORDER BY id DESC
                 LIMIT 1
@@ -141,7 +237,6 @@ class PostgresChatStore:
 
         if not row:
             return None
-
         return self._row_to_payload(row)
 
     def latest_id(self):
@@ -150,32 +245,51 @@ class PostgresChatStore:
             cur.execute("SELECT id FROM messages ORDER BY id DESC LIMIT 1")
             row = cur.fetchone()
             cur.close()
-
         return int(row[0]) if row else None
 
+    def stats(self) -> dict[str, int]:
+        with self._connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM messages")
+            stored = int(cur.fetchone()[0])
+            cur.execute("SELECT COALESCE(MAX(id), 0) FROM messages")
+            total = int(cur.fetchone()[0])
+            cur.close()
+
+        return {
+            "count": total,
+            "stored": stored,
+            "storeLimit": self._max_messages,
+        }
+
     def _trim_messages(self, conn):
-        conn.cursor().execute(
+        cur = conn.cursor()
+        cur.execute(
             """
             DELETE FROM messages
             WHERE id IN (
-                SELECT id FROM messages
+                SELECT id
+                FROM messages
                 ORDER BY id ASC
                 LIMIT GREATEST((SELECT COUNT(*) FROM messages) - %s, 0)
             )
             """,
             (self._max_messages,),
         )
+        cur.close()
 
-    @staticmethod
-    def _row_to_payload(row):
+    @classmethod
+    def _row_to_payload(cls, row):
         return {
-            "id": int(row[0]),
-            "sender": str(row[1]),
-            "text": str(row[2]),
-            "timestamp": PostgresChatStore._timestamp(row[3]),
+            "id": str(row[1] or row[0]),
+            "sequence": int(row[0]),
+            "sender": str(row[2]),
+            "text": str(row[3]),
+            "timestamp": cls._timestamp_ms(row[4]),
+            "clientId": str(row[7]) if row[7] is not None else None,
             "replyTo": (
-                {"id": row[4], "text": row[5]}
-                if row[4] is not None and row[5] is not None
+                {"id": str(row[6] or row[5]), "text": str(row[8])}
+                if (row[6] is not None or row[5] is not None) and row[8] is not None
                 else None
             ),
         }

@@ -37,14 +37,14 @@ export function ChatPage() {
   const { user, userDisplayName, partnerDisplayName: authPartnerDisplayName, logout } = useAuth();
   const [draft, setDraft] = useState("");
   const [replyTarget, setReplyTarget] = useState<ChatReplyTarget | null>(null);
-  const [reactions, setReactions] = useState<Record<number, string | null>>({});
+  const [reactions, setReactions] = useState<Record<string, string | null>>({});
   const [newMessageCount, setNewMessageCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const typingTimeoutRef = useRef<number | null>(null);
   const listRef = useRef<MessageListHandle | null>(null);
   const wallpaperInputRef = useRef<HTMLInputElement | null>(null);
   const previousMessageLengthRef = useRef(0);
-  const previousLastMessageIdRef = useRef<number | null>(null);
+  const previousLastMessageIdRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
 
   const isAdmin = user === "usman";
@@ -64,7 +64,6 @@ export function ChatPage() {
     partnerLastReadId,
     error,
     loadOlder,
-    refreshMessages,
     sendMessage,
     setTypingActive,
     markRead,
@@ -112,7 +111,7 @@ export function ChatPage() {
 
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
-      if (message?.sender === user && message.id <= partnerLastReadId) {
+      if (message?.sender === user && message.sequence <= partnerLastReadId) {
         return message.id;
       }
     }
@@ -280,14 +279,14 @@ export function ChatPage() {
     });
   }, [logout, navigate]);
 
-  const handleToggleHeart = useCallback((messageId: number) => {
+  const handleToggleHeart = useCallback((messageId: string) => {
     setReactions((current) => ({
       ...current,
       [messageId]: current[messageId] === "\u2764\uFE0F" ? null : "\u2764\uFE0F",
     }));
   }, []);
 
-  const handleSelectReaction = useCallback((messageId: number, emoji: string) => {
+  const handleSelectReaction = useCallback((messageId: string, emoji: string) => {
     setReactions((current) => ({
       ...current,
       [messageId]: emoji,
@@ -322,36 +321,12 @@ export function ChatPage() {
       return;
     }
 
-    markRead(latestMessage.id);
+    markRead(latestMessage.sequence);
   }, [isAtBottom, markRead, messages, user]);
 
   useEffect(() => {
     markLatestIncomingAsRead();
   }, [markLatestIncomingAsRead]);
-
-  useEffect(() => {
-    void refreshMessages();
-  }, [refreshMessages]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void refreshMessages();
-        markLatestIncomingAsRead();
-      }
-    };
-
-    const handleWindowFocus = () => {
-      void refreshMessages();
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("focus", handleWindowFocus);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("focus", handleWindowFocus);
-    };
-  }, [markLatestIncomingAsRead, refreshMessages]);
 
   return (
     <div className="relative flex h-[100svh] flex-col overflow-hidden bg-[#0f1014]">

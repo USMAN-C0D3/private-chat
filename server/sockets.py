@@ -14,34 +14,6 @@ from .services import get_chat_services
 
 _socket_users: dict[str, str] = {}
 _presence_lock = Lock()
-_duplicate_message_cache: dict[str, dict[str, Any]] = {}
-_duplicate_lock = Lock()
-
-
-def _is_duplicate_message(username: str, text: str) -> bool:
-    import time
-
-    normalized_text = text.strip()
-    if not normalized_text:
-        return False
-
-    now = time.time()
-    with _duplicate_lock:
-        stale_users = [user for user, entry in _duplicate_message_cache.items() if now - float(entry.get("time", 0)) > 2.0]
-        for stale_user in stale_users:
-            _duplicate_message_cache.pop(stale_user, None)
-
-        last_entry = _duplicate_message_cache.get(username)
-        if (
-            last_entry is not None
-            and str(last_entry.get("text", "")) == normalized_text
-            and now - float(last_entry.get("time", 0)) < 1.0
-        ):
-            return True
-
-        _duplicate_message_cache[username] = {"text": normalized_text, "time": now}
-        return False
-
 
 def _online_users() -> list[str]:
     with _presence_lock:
@@ -52,7 +24,6 @@ def _emit_presence(socketio: SocketIO) -> None:
     payload = {"onlineUsers": _online_users()}
     room = current_app.config["PRIVATE_CHAT_ROOM"]
     socketio.emit("presence", payload, room=room)
-    socketio.emit("user_online", payload, room=room)
 
 
 def _bot_owner_username() -> str:
@@ -135,6 +106,7 @@ def register_socket_events(socketio: SocketIO) -> None:
             data = payload or {}
             text = str(data.get("text", "")).strip()
             reply_to_payload = data.get("replyTo")
+            client_id = str(data.get("clientId", "")).strip() or None
 
             if not text:
                 emit("chat_error", {"message": "Message text is required."})
@@ -148,36 +120,30 @@ def register_socket_events(socketio: SocketIO) -> None:
                 )
                 return
 
-            if _is_duplicate_message(username, text):
-                emit(
-                    "chat_error",
-                    {"message": "Duplicate message blocked."},
-                )
-                return
-
             normalized_reply_to: dict[str, Any] | None = None
             if isinstance(reply_to_payload, dict):
                 raw_reply_id = reply_to_payload.get("id")
                 raw_reply_text = str(reply_to_payload.get("text", "")).strip()
-                try:
-                    parsed_reply_id = int(raw_reply_id)
-                except (TypeError, ValueError):
-                    parsed_reply_id = None
+                parsed_reply_id = str(raw_reply_id).strip() or None
 
-                if parsed_reply_id is not None and parsed_reply_id > 0 and raw_reply_text:
+                if parsed_reply_id and raw_reply_text:
                     normalized_reply_to = {
                         "id": parsed_reply_id,
                         "text": raw_reply_text[:max_length],
                     }
 
             services = get_chat_services()
-            message = services.store.append(username, text, reply_to=normalized_reply_to)
+            message = services.store.append(
+                username,
+                text,
+                reply_to=normalized_reply_to,
+                client_id=client_id,
+            )
             if normalized_reply_to is not None:
                 message["replyTo"] = normalized_reply_to
             payload = {"message": message}
             room = current_app.config["PRIVATE_CHAT_ROOM"]
             socketio.emit("receive_message", payload, room=room)
-            socketio.emit("new_message", payload, room=room)
         except Exception:
             current_app.logger.exception("Unhandled error in send_message")
             emit("chat_error", {"message": "Unable to send message right now."})
@@ -328,7 +294,6 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
     with app.app_context():
         try:
             services = get_chat_services()
-            batch_size = app.config["BOT_EMIT_BATCH_SIZE"]
             progress_interval = app.config["BOT_PROGRESS_INTERVAL"]
             last_progress_count = 0
 
@@ -341,34 +306,17 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
                 if not bot.is_running:
                     break
 
-                remaining = bot.target - bot.message_count
-                current_batch_size = min(batch_size, remaining)
-                texts = [bot.get_next_message() for _ in range(current_batch_size)]
+                message = services.store.append(username, bot.get_next_message())
+                bot.message_count += 1
 
-                messages = services.store.append_many(username, texts)
-                if not messages:
-                    break
-
-                bot.message_count += len(messages)
-
-                socketio.emit(
-                    "receive_messages",
-                    {"messages": messages},
-                    room=room,
-                )
+                socketio.emit("receive_message", {"message": message}, room=room)
 
                 if bot.message_count - last_progress_count >= progress_interval or bot.message_count >= bot.target:
                     last_progress_count = bot.message_count
-                    socketio.emit(
-                        "bot_progress",
-                        {"count": bot.message_count},
-                        room=room,
-                    )
+                    socketio.emit("bot_progress", {"count": bot.message_count}, room=room)
 
-                if bot.message_count < bot.target:
-                    sleep_time = len(messages) / bot.speed
-                    if sleep_time > 0:
-                        socketio.sleep(sleep_time)
+                if bot.message_count < bot.target and bot.speed > 0:
+                    socketio.sleep(1 / bot.speed)
 
             # Bot finished
             if bot.is_running:

@@ -1,15 +1,18 @@
 export type Username = string;
 
 export interface ChatReplyTarget {
-  id: number;
+  id: string;
   text: string;
 }
 
 export interface ChatMessage {
-  id: number;
+  id: string;
+  sequence: number;
   sender: string;
   text: string;
-  timestamp: string;
+  timestamp: number;
+  clientId?: string | null;
+  pending?: boolean;
   replyTo?: ChatReplyTarget | null;
 }
 

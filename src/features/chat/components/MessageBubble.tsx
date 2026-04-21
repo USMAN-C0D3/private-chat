@@ -35,10 +35,10 @@ interface MessageBubbleProps {
   deliveryState: "sent" | "read" | null;
   isGroupedWithPrevious: boolean;
   isGroupedWithNext: boolean;
-  onToggleHeart: (messageId: number) => void;
-  onSelectReaction: (messageId: number, emoji: string) => void;
+  onToggleHeart: (messageId: string) => void;
+  onSelectReaction: (messageId: string, emoji: string) => void;
   onSwipeReply: (message: ChatMessage) => void;
-  onReplyNavigate: (messageId: number) => void;
+  onReplyNavigate: (messageId: string) => void;
 }
 
 
@@ -76,7 +76,7 @@ export const MessageBubble = memo(function MessageBubble({
     () => ["\u2764\uFE0F", "\u{1F602}", "\u{1F525}", "\u{1F60D}", "\u{1F62D}", "\u{1F44D}"],
     [],
   );
-  const entranceDelayMs = useMemo(() => (message.id % 5) * 24, [message.id]);
+  const entranceDelayMs = useMemo(() => (message.sequence % 5) * 24, [message.sequence]);
   const toggleHeartReaction = useCallback(() => {
     onToggleHeart(message.id);
   }, [message.id, onToggleHeart]);
