@@ -6,3 +6,5 @@ psycopg2-binary>=2.9,<3.0
 flask-cors
 gevent>=24.0,<26.0
 gevent-websocket>=0.10,<1.0
+gevent
+gevent-websocket
