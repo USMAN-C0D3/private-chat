@@ -36,7 +36,11 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     app.config["PRIVATE_ACCOUNTS"] = app.config.get("PRIVATE_ACCOUNTS") or load_private_accounts(app.config["APP_ENV"])
 
-    db_url = app.config["DATABASE_URL"]
+    db_url = str(app.config.get("DATABASE_URL", "")).strip()
+    if not db_url:
+        database_path_fallback = app.config.get("DATABASE_PATH")
+        if database_path_fallback:
+            db_url = f"sqlite:///{database_path_fallback}"
 
     # ✅ FIX: Only enforce /var/data for SQLite
     if db_url.startswith("sqlite"):

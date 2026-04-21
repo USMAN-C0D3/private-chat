@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-SUPPORTED_ASYNC_MODES = {"eventlet", "threading"}
+SUPPORTED_ASYNC_MODES = {"threading"}
 
 
 def get_async_mode() -> str:

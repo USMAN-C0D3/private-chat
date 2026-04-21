@@ -80,9 +80,6 @@ class Config:
     DATABASE_URL = default_database_url(APP_ENV)
     DATABASE_PATH = _sqlite_path_from_database_url(DATABASE_URL)
 
-    # Optional debug (remove later if you want)
-    print("DATABASE_URL:", DATABASE_URL)
-
     SESSION_COOKIE_NAME = "private_chat_session"
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = getenv_str(

@@ -19,7 +19,8 @@ class ChatServices:
 def create_chat_services(config: dict[str, Any], socketio: SocketIO) -> ChatServices:
     del socketio
     database_path = config["DATABASE_PATH"]
-    init_store_database(database_path)
+    if database_path:
+        init_store_database(database_path)
     return ChatServices(
         store=ChatStore(
             database_path=database_path,

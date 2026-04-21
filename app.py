@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import os
 
-# 🔥 MUST BE FIRST (CRITICAL FIX)
-import eventlet
-eventlet.monkey_patch()
-
-# ✅ THEN everything else
 try:
     if os.environ.get("APP_ENV") != "production":
         from local_env import load_local_env
