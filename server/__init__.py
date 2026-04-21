@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
+
 from flask import Flask
 from flask_socketio import SocketIO
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -15,6 +18,7 @@ from .sockets import register_socket_events
 
 
 socketio: SocketIO | None = None
+logger = logging.getLogger(__name__)
 
 
 def create_app(config_object: type[Config] | None = None) -> Flask:
@@ -35,9 +39,9 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     if app.config["APP_ENV"] == "production":
         database_path = str(app.config.get("DATABASE_PATH", ""))
         if not database_path.startswith("/var/data/"):
-            app.logger.warning(
-                "DATABASE_URL resolves to '%s'. On Render, use a sqlite URL/path under /var/data for persistent storage.",
-                database_path,
+            raise RuntimeError(
+                "DATABASE_URL must resolve under /var/data in production for persistent sqlite storage. "
+                f"Current resolved path: {database_path}"
             )
 
     if app.config["APP_ENV"] == "production" and app.config["SECRET_KEY"] == "change-me-in-production":
@@ -66,6 +70,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     register_routes(app)
     app.extensions["chat_services"] = create_chat_services(app.config, socketio)
+    _validate_database_connection(str(app.config["DATABASE_PATH"]))
     register_socket_events(socketio)
 
     @app.after_request
@@ -88,3 +93,15 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     app.extensions["socketio"] = socketio
     return app
+
+
+def _validate_database_connection(database_path: str) -> None:
+    try:
+        connection = sqlite3.connect(database_path, timeout=10)
+        try:
+            connection.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
+        finally:
+            connection.close()
+    except Exception as caught_error:
+        logger.exception("Database startup check failed")
+        raise RuntimeError("Database connection failed") from caught_error

@@ -30,6 +30,7 @@ interface MessageListProps {
   partnerDisplayName: string;
   typingUser: string | null;
   loading: boolean;
+  error: string | null;
   hasMore: boolean;
   loadingOlder: boolean;
   connectionState: ConnectionState;
@@ -52,6 +53,7 @@ function MessageListInner(
     partnerDisplayName,
     typingUser,
     loading,
+    error,
     hasMore,
     loadingOlder,
     connectionState,
@@ -196,6 +198,13 @@ function MessageListInner(
           <div className="glass-panel flex items-center gap-3 rounded-full px-4 py-3 text-sm text-muted">
             <LoaderCircle className="h-4 w-4 animate-spin text-cyan-200" />
             Loading conversation
+          </div>
+        </div>
+      ) : error ? (
+        <div className="flex flex-1 items-center justify-center px-6 text-center">
+          <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 px-5 py-4 text-sm text-rose-100 shadow-[0_14px_30px_rgba(0,0,0,0.2)]">
+            <p className="font-semibold">Unable to load messages</p>
+            <p className="mt-2 text-rose-100/85">{error}</p>
           </div>
         </div>
       ) : messages.length === 0 ? (

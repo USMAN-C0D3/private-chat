@@ -1,9 +1,10 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api } from "@/lib/api";
 import { getChatSocket } from "@/lib/socket";
 import type {
   ChatErrorPayload,
+  ChatBootstrapResponse,
   ChatMessage,
   ChatReplyTarget,
   ChatStatePayload,
@@ -19,6 +20,8 @@ import type {
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
 const MESSAGE_FLUSH_BATCH_SIZE = 1200;
+const CHAT_BOOTSTRAP_RETRY_COUNT = 2;
+const CHAT_BOOTSTRAP_RETRY_DELAY_MS = 600;
 
 
 interface UseChatRoomState {
@@ -38,6 +41,7 @@ interface UseChatRoomState {
   partnerLastReadId: number | null;
   error: string | null;
   loadOlder: () => Promise<void>;
+  refreshMessages: () => Promise<void>;
   sendMessage: (text: string, replyTo?: ChatReplyTarget | null) => boolean;
   setTypingActive: (active: boolean) => void;
   markRead: (messageId: number) => void;
@@ -102,6 +106,78 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const typingTimeoutRef = useRef<number | null>(null);
   const viewerRef = useRef<string | null>(null);
   const viewerLastReadRef = useRef<number>(0);
+  const refreshInFlightRef = useRef(false);
+  const bootstrapRequestIdRef = useRef(0);
+
+  const delay = useCallback((ms: number) => {
+    return new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }, []);
+
+  const applyBootstrapPayload = useCallback((payload: ChatBootstrapResponse) => {
+    viewerRef.current = payload.viewer;
+    setMessages((current) => integrateMessages(payload.messages, current));
+    setPartner(payload.partner);
+    setPartnerDisplayName(payload.partnerDisplayName);
+    setViewer(payload.viewer);
+    setViewerDisplayName(payload.viewerDisplayName);
+    setHasMore(payload.hasMore);
+    setNextCursor(payload.nextCursor);
+    setViewerLastReadId(payload.viewerLastReadId);
+    setPartnerLastReadId(payload.partnerLastReadId);
+    viewerLastReadRef.current = payload.viewerLastReadId ?? 0;
+  }, []);
+
+  const fetchBootstrapWithRetry = useCallback(async () => {
+    let attempt = 0;
+    while (attempt <= CHAT_BOOTSTRAP_RETRY_COUNT) {
+      try {
+        return await api.getChatBootstrap();
+      } catch (caughtError) {
+        console.error("Failed to load chat bootstrap:", caughtError);
+        if (attempt >= CHAT_BOOTSTRAP_RETRY_COUNT) {
+          throw caughtError;
+        }
+
+        attempt += 1;
+        await delay(CHAT_BOOTSTRAP_RETRY_DELAY_MS * attempt);
+      }
+    }
+
+    throw new Error("Unable to load chat bootstrap.");
+  }, [delay]);
+
+  const refreshMessages = useCallback(async () => {
+    if (!enabled || refreshInFlightRef.current) {
+      return;
+    }
+
+    const requestId = ++bootstrapRequestIdRef.current;
+    refreshInFlightRef.current = true;
+    try {
+      const payload = await fetchBootstrapWithRetry();
+      if (requestId !== bootstrapRequestIdRef.current) {
+        return;
+      }
+
+      applyBootstrapPayload(payload);
+      setError(null);
+    } catch (caughtError) {
+      if (requestId !== bootstrapRequestIdRef.current) {
+        return;
+      }
+
+      console.error("Failed to refresh messages:", caughtError);
+      if (caughtError instanceof ApiError) {
+        setError(caughtError.message);
+      } else {
+        setError("Unable to refresh the chat room.");
+      }
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry]);
 
   useEffect(() => {
     if (!enabled) {
@@ -163,6 +239,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     const handleConnect = () => {
       setConnectionState("connected");
       setError(null);
+      void refreshMessages();
     };
 
     const handleDisconnect = () => {
@@ -280,27 +357,28 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     socket.connect();
 
     void (async () => {
+      const requestId = ++bootstrapRequestIdRef.current;
       try {
-        const payload = await api.getChatBootstrap();
+        const payload = await fetchBootstrapWithRetry();
         if (!active) {
           return;
         }
 
-        viewerRef.current = payload.viewer;
-        setMessages((current) => integrateMessages(payload.messages, current));
-        setPartner(payload.partner);
-        setPartnerDisplayName(payload.partnerDisplayName);
-        setViewer(payload.viewer);
-        setViewerDisplayName(payload.viewerDisplayName);
-        setHasMore(payload.hasMore);
-        setNextCursor(payload.nextCursor);
-        setViewerLastReadId(payload.viewerLastReadId);
-        setPartnerLastReadId(payload.partnerLastReadId);
-        viewerLastReadRef.current = payload.viewerLastReadId ?? 0;
+        if (requestId !== bootstrapRequestIdRef.current) {
+          return;
+        }
+
+        applyBootstrapPayload(payload);
       } catch (caughtError) {
         if (!active) {
           return;
         }
+
+        if (requestId !== bootstrapRequestIdRef.current) {
+          return;
+        }
+
+        console.error("Failed to initialize chat room:", caughtError);
 
         if (caughtError instanceof ApiError) {
           setError(caughtError.message);
@@ -338,7 +416,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       socket.off("chat_error", handleChatError);
       socket.disconnect();
     };
-  }, [enabled, username]);
+  }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry, refreshMessages, username]);
 
   async function loadOlder() {
     if (loadingOlder || nextCursor === null) {
@@ -352,6 +430,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       setHasMore(payload.hasMore);
       setNextCursor(payload.nextCursor);
     } catch (caughtError) {
+      console.error("Failed to load older messages:", caughtError);
       if (caughtError instanceof ApiError) {
         setError(caughtError.message);
       } else {
@@ -419,6 +498,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     partnerLastReadId,
     error,
     loadOlder,
+    refreshMessages,
     sendMessage,
     setTypingActive,
     markRead,

@@ -8,16 +8,18 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-def _sqlite_path_from_database_url(database_url: str) -> Path:
+def _sqlite_path_from_database_url(database_url: str) -> Path | None:
     value = database_url.strip()
+
+    # Only handle sqlite URLs
     if value.startswith("sqlite:///"):
         return Path(value.removeprefix("sqlite:///"))
 
     if value.startswith("sqlite://"):
         return Path(value.removeprefix("sqlite://"))
 
-    # Allow plain paths for operational simplicity.
-    return Path(value)
+    # For postgres or anything else → DO NOT treat as file path
+    return None
 
 
 def default_database_url(app_env: str) -> str:
@@ -25,12 +27,12 @@ def default_database_url(app_env: str) -> str:
     if env_url:
         return env_url
 
-    # Backward-compatibility fallback. DATABASE_URL is preferred.
+    # Backward compatibility
     legacy_path = os.getenv("DATABASE_PATH", "").strip()
     if legacy_path:
         return legacy_path
 
-    # Render persistent disk mount point. Falls back to local instance in non-production.
+    # Default fallback
     if app_env == "production":
         return "sqlite:////var/data/private_chat.sqlite3"
 
@@ -74,8 +76,12 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
     TRUST_PROXY_HEADERS = getenv_bool("TRUST_PROXY_HEADERS", APP_ENV == "production")
 
+    # ✅ FIXED: supports postgres safely
     DATABASE_URL = default_database_url(APP_ENV)
     DATABASE_PATH = _sqlite_path_from_database_url(DATABASE_URL)
+
+    # Optional debug (remove later if you want)
+    print("DATABASE_URL:", DATABASE_URL)
 
     SESSION_COOKIE_NAME = "private_chat_session"
     SESSION_COOKIE_HTTPONLY = True
@@ -83,9 +89,17 @@ class Config:
         "SESSION_COOKIE_SAMESITE",
         "None" if APP_ENV == "production" else "Lax",
     )
-    SESSION_COOKIE_SECURE = getenv_bool("SESSION_COOKIE_SECURE", APP_ENV == "production")
-    PERMANENT_SESSION_LIFETIME = timedelta(days=7)
-    SESSION_REFRESH_EACH_REQUEST = False
+    SESSION_COOKIE_SECURE = getenv_bool(
+        "SESSION_COOKIE_SECURE",
+        APP_ENV == "production",
+    )
+    PERMANENT_SESSION_LIFETIME = timedelta(
+        days=max(1, min(int(os.getenv("PERMANENT_SESSION_LIFETIME_DAYS", "30")), 365))
+    )
+    SESSION_REFRESH_EACH_REQUEST = getenv_bool(
+        "SESSION_REFRESH_EACH_REQUEST",
+        APP_ENV == "production",
+    )
     PREFERRED_URL_SCHEME = "https" if APP_ENV == "production" else "http"
 
     FRONTEND_DIST_DIR = BASE_DIR / "dist"
@@ -98,8 +112,17 @@ class Config:
 
     PRIVATE_CHAT_ROOM = "private-two-user-thread"
     CSRF_HEADER_NAME = "X-CSRF-Token"
-    LOGIN_RATE_LIMIT_WINDOW_SECONDS = clamp(int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "600")), 60, 86_400)
-    LOGIN_RATE_LIMIT_MAX_ATTEMPTS = clamp(int(os.getenv("LOGIN_RATE_LIMIT_MAX_ATTEMPTS", "6")), 2, 100)
+
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS = clamp(
+        int(os.getenv("LOGIN_RATE_LIMIT_WINDOW_SECONDS", "600")),
+        60,
+        86_400,
+    )
+    LOGIN_RATE_LIMIT_MAX_ATTEMPTS = clamp(
+        int(os.getenv("LOGIN_RATE_LIMIT_MAX_ATTEMPTS", "6")),
+        2,
+        100,
+    )
 
     SOCKET_IO_CORS_ORIGINS: list[str] | str = (
         getenv_csv(
@@ -114,14 +137,35 @@ class Config:
         if APP_ENV == "development"
         else getenv_csv(
             "SOCKET_IO_CORS_ORIGINS",
-            ["https://your-frontend-url"],
+            ["https://private-chat-wine-nine.vercel.app"],
         )
     )
+
     SOCKET_IO_PING_INTERVAL = 25
     SOCKET_IO_PING_TIMEOUT = 20
-    SOCKET_IO_MAX_HTTP_BUFFER_SIZE = clamp(int(os.getenv("SOCKET_IO_MAX_HTTP_BUFFER_SIZE", "2000000")), 500_000, 10_000_000)
+    SOCKET_IO_MAX_HTTP_BUFFER_SIZE = clamp(
+        int(os.getenv("SOCKET_IO_MAX_HTTP_BUFFER_SIZE", "2000000")),
+        500_000,
+        10_000_000,
+    )
 
-    BOT_EMIT_BATCH_SIZE = clamp(int(os.getenv("BOT_EMIT_BATCH_SIZE", "120")), 20, 2_000)
-    BOT_PROGRESS_INTERVAL = clamp(int(os.getenv("BOT_PROGRESS_INTERVAL", "250")), 25, 5_000)
-    BOT_WORDLIST_MAX_UPLOAD_BYTES = clamp(int(os.getenv("BOT_WORDLIST_MAX_UPLOAD_BYTES", "5000000")), 100_000, 25_000_000)
-    BOT_WORDLIST_MAX_LINES = clamp(int(os.getenv("BOT_WORDLIST_MAX_LINES", "100000")), 1_000, 1_000_000)
+    BOT_EMIT_BATCH_SIZE = clamp(
+        int(os.getenv("BOT_EMIT_BATCH_SIZE", "120")),
+        20,
+        2_000,
+    )
+    BOT_PROGRESS_INTERVAL = clamp(
+        int(os.getenv("BOT_PROGRESS_INTERVAL", "250")),
+        25,
+        5_000,
+    )
+    BOT_WORDLIST_MAX_UPLOAD_BYTES = clamp(
+        int(os.getenv("BOT_WORDLIST_MAX_UPLOAD_BYTES", "5000000")),
+        100_000,
+        25_000_000,
+    )
+    BOT_WORDLIST_MAX_LINES = clamp(
+        int(os.getenv("BOT_WORDLIST_MAX_LINES", "100000")),
+        1_000,
+        1_000_000,
+    )

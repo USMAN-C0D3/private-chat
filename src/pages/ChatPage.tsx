@@ -63,6 +63,7 @@ export function ChatPage() {
     partnerLastReadId,
     error,
     loadOlder,
+    refreshMessages,
     sendMessage,
     setTypingActive,
     markRead,
@@ -328,17 +329,28 @@ export function ChatPage() {
   }, [markLatestIncomingAsRead]);
 
   useEffect(() => {
+    void refreshMessages();
+  }, [refreshMessages]);
+
+  useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
+        void refreshMessages();
         markLatestIncomingAsRead();
       }
     };
 
+    const handleWindowFocus = () => {
+      void refreshMessages();
+    };
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
     };
-  }, [markLatestIncomingAsRead]);
+  }, [markLatestIncomingAsRead, refreshMessages]);
 
   return (
     <div className="relative flex h-[100svh] flex-col overflow-hidden bg-[#0f1014]">
@@ -500,6 +512,7 @@ export function ChatPage() {
               ref={listRef}
               connectionState={connectionState}
               currentUser={user ?? ""}
+              error={error}
               hasMore={hasMore}
               loading={loading}
               loadingOlder={loadingOlder}
