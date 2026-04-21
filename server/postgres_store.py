@@ -8,14 +8,13 @@ class PostgresChatStore:
     def _conn(self):
         return psycopg2.connect(self.database_url)
 
-    # ✅ Save message
     def append(self, sender, text, reply_to=None):
         conn = self._conn()
         cur = conn.cursor()
 
         cur.execute(
             """
-            INSERT INTO messages (sender, receiver, content)
+            INSERT INTO messages (sender, receiver, text)
             VALUES (%s, %s, %s)
             RETURNING id, created_at
             """,
@@ -36,14 +35,13 @@ class PostgresChatStore:
             "replyTo": reply_to,
         }
 
-    # ✅ Load chat messages (for chat page)
     def recent_page(self, limit):
         conn = self._conn()
         cur = conn.cursor()
 
         cur.execute(
             """
-            SELECT id, sender, content, created_at
+            SELECT id, sender, text, created_at
             FROM messages
             ORDER BY id DESC
             LIMIT %s
@@ -70,14 +68,13 @@ class PostgresChatStore:
 
         return messages, False, None
 
-    # ✅ FIX: required for /api/inbox
     def latest(self):
         conn = self._conn()
         cur = conn.cursor()
 
         cur.execute(
             """
-            SELECT sender, content, created_at
+            SELECT sender, text, created_at
             FROM messages
             ORDER BY created_at DESC
             LIMIT 1
