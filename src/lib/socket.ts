@@ -3,17 +3,16 @@ import type { Socket } from "socket.io-client";
 
 
 let chatSocket: Socket | null = null;
-let chatSocketUser: string | null = null;
 const SOCKET_URL = import.meta.env.DEV
   ? "http://127.0.0.1:5000"
   : (import.meta.env.VITE_SOCKET_URL ?? "").trim();
 
 
 export function getChatSocket(username: string | null = null): Socket {
-  if (chatSocket !== null && username !== null && chatSocketUser !== username) {
-    chatSocket.disconnect();
-    chatSocket = null;
-    chatSocketUser = null;
+  void username;
+
+  if (chatSocket?.connected) {
+    return chatSocket;
   }
 
   if (chatSocket === null) {
@@ -29,10 +28,11 @@ export function getChatSocket(username: string | null = null): Socket {
       randomizationFactor: 0.35,
       reconnectionAttempts: Infinity,
     });
+
+    console.log("SOCKET CREATED");
     chatSocket.on("connect", () => {
       console.log("CONNECTED:", chatSocket?.id);
     });
-    chatSocketUser = username;
   }
 
   return chatSocket;
@@ -46,5 +46,13 @@ export function closeChatSocket() {
 
   chatSocket.disconnect();
   chatSocket = null;
-  chatSocketUser = null;
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (chatSocket) {
+      chatSocket.disconnect();
+      chatSocket = null;
+    }
+  });
 }

@@ -310,7 +310,6 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     const handleConnect = () => {
       setConnectionState("connected");
       setError(null);
-      console.log("CONNECTED:", socket.id);
     };
 
     const handleDisconnect = () => {
@@ -503,7 +502,6 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       socket.off("messages_read", handleMessagesRead);
       socket.off("typing", handleTyping);
       socket.off("chat_error", handleChatError);
-      socket.disconnect();
     };
   }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry, handleReceiveMessage, refreshMessages, username]);
 
