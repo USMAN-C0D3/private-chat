@@ -27,6 +27,7 @@ export function Composer({
   onCancelReply,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const lastSubmitAtRef = useRef(0);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const emojis = useMemo(
@@ -129,9 +130,17 @@ export function Composer({
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
+
+                  const now = Date.now();
+                  if (now - lastSubmitAtRef.current < 400) {
+                    return;
+                  }
+
                   if (isSending) {
                     return;
                   }
+
+                  lastSubmitAtRef.current = now;
                   onSubmit();
                 }
               }}

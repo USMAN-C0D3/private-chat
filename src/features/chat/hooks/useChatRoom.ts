@@ -458,6 +458,11 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   }
 
   function sendMessage(text: string, replyTo: ChatReplyTarget | null = null) {
+    const normalizedText = text.trim();
+    if (!normalizedText) {
+      return false;
+    }
+
     const socket = getChatSocket();
     if (sendLockRef.current) {
       return false;
@@ -477,7 +482,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
 
     sendLockRef.current = true;
     setIsSending(true);
-    socket.emit("send_message", { text, replyTo });
+    socket.emit("send_message", { text: normalizedText, replyTo });
 
     sendUnlockTimerRef.current = window.setTimeout(() => {
       sendLockRef.current = false;

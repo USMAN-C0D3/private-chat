@@ -74,6 +74,15 @@ class PostgresChatStore:
             ),
         }
 
+    def append_many(self, sender: str, texts: Iterable[str]):
+        messages = []
+        for text in texts:
+            normalized = str(text).strip()
+            if not normalized:
+                continue
+            messages.append(self.append(sender, normalized))
+        return messages
+
     def recent_page(self, limit: int):
         with self._connection() as conn:
             cur = conn.cursor()
