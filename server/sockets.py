@@ -137,6 +137,11 @@ def register_socket_events(socketio: SocketIO) -> None:
                     }
 
             services = get_chat_services()
+            bot_manager = get_bot_manager()
+            bot = bot_manager.get_bot(username)
+            if bot and bot.is_running:
+                current_app.logger.debug("WARNING: bot still running during user send")
+
             message = services.store.append(
                 username,
                 text,
@@ -232,6 +237,7 @@ def register_socket_events(socketio: SocketIO) -> None:
             if existing:
                 existing.is_running = False
                 bot_manager.set_bot(username, None)
+                current_app.logger.debug("OLD BOT FORCE STOPPED")
 
             data = payload or {}
             words = _resolve_bot_words(username, data)
@@ -293,7 +299,8 @@ def register_socket_events(socketio: SocketIO) -> None:
             if bot:
                 bot.is_running = False
                 bot_manager.set_bot(username, None)
-                emit("bot_stopped")
+                current_app.logger.debug("BOT MANUALLY STOPPED")
+                emit("bot_stopped", {"count": bot.message_count})
 
         except Exception:
             current_app.logger.exception("Unhandled error in stop_bot")
@@ -304,6 +311,7 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
     with app.app_context():
         try:
             services = get_chat_services()
+            bot_manager = get_bot_manager()
             progress_interval = app.config["BOT_PROGRESS_INTERVAL"]
             last_progress_count = 0
 
@@ -312,12 +320,24 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
                 socketio.sleep(bot.delay)
 
             # Main loop
-            while bot.is_running and bot.message_count < bot.target:
+            while True:
+                # Hard stop conditions
                 if not bot.is_running:
                     break
 
+                current_bot = bot_manager.get_bot(username)
+                if current_bot is None or current_bot != bot:
+                    break
+
+                if bot.message_count >= bot.target:
+                    break
+
                 message = services.store.append(username, bot.get_next_message())
+                if message is None:
+                    continue
                 bot.message_count += 1
+
+                app.logger.debug("BOT EMIT message=%s", message.get("id"))
 
                 socketio.emit("receive_message", {"message": message}, room=room)
 
@@ -325,14 +345,11 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
                     last_progress_count = bot.message_count
                     socketio.emit("bot_progress", {"count": bot.message_count}, room=room)
 
-                if bot.message_count < bot.target and bot.speed > 0:
+                if bot.speed > 0:
                     socketio.sleep(1 / bot.speed)
 
-            # Bot finished
-            if bot.is_running:
-                bot.is_running = False
-
-            bot_manager = get_bot_manager()
+            # Clean exit
+            bot.is_running = False
             bot_manager.set_bot(username, None)
 
             # Notify client
