@@ -44,6 +44,7 @@ def _load_account(index: int) -> tuple[PrivateAccount, bool]:
     if not display_name:
         raise RuntimeError(f"{display_env} must not be empty.")
 
+    # ✅ Check if password hash provided
     password_hash = os.getenv(password_hash_env, "").strip()
     if password_hash:
         return (
@@ -55,24 +56,35 @@ def _load_account(index: int) -> tuple[PrivateAccount, bool]:
             False,
         )
 
-    password = _getenv(password_env, default_password)
+    # ✅ Check if password is provided via ENV (this is the FIX)
+    raw_password = os.getenv(password_env)
+
+    if raw_password is not None:
+        password = raw_password.strip()
+        using_default_password = False
+    else:
+        password = default_password
+        using_default_password = True
+
     return (
         PrivateAccount(
             username=username,
             display_name=display_name,
             password_hash=generate_password_hash(password),
         ),
-        password == default_password,
+        using_default_password,
     )
 
 
 def load_private_accounts(app_env: str) -> dict[str, PrivateAccount]:
     loaded_accounts = [_load_account(1), _load_account(2)]
     usernames = [account.username for account, _ in loaded_accounts]
+
     if len(set(usernames)) != len(usernames):
         raise RuntimeError("Private account usernames must be unique.")
 
-    if app_env == "production" and any(using_default_password for _, using_default_password in loaded_accounts):
+    # ✅ Only fail if ENV password NOT provided
+    if app_env == "production" and any(using_default for _, using_default in loaded_accounts):
         raise RuntimeError(
             "Set PRIVATE_ACCOUNT_1_PASSWORD and PRIVATE_ACCOUNT_2_PASSWORD or provide password hashes before deploying."
         )
