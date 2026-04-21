@@ -214,25 +214,35 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const handleReceiveMessage = useCallback((payload: ReceiveMessagePayload) => {
     console.log("RECEIVED", payload.message.id);
 
-    if (
-      payload.message.sender === viewerRef.current
-      && pendingClientIdRef.current
-      && payload.message.clientId === pendingClientIdRef.current
-    ) {
+    const pendingClientId = pendingClientIdRef.current;
+    const isSelfMessage = payload.message.sender === viewerRef.current;
+    const matchesPending = Boolean(
+      isSelfMessage
+      && pendingClientId
+      && (payload.message.clientId === pendingClientId || payload.message.id === pendingClientId),
+    );
+
+    const normalizedMessage: ChatMessage = (
+      matchesPending && !payload.message.clientId
+        ? { ...payload.message, clientId: pendingClientId! }
+        : payload.message
+    );
+
+    if (matchesPending) {
       pendingClientIdRef.current = null;
       sendLockRef.current = false;
       setIsSending(false);
     }
 
-    if (seenMessageIdsRef.current.has(payload.message.id)) {
+    if (seenMessageIdsRef.current.has(normalizedMessage.id)) {
       return;
     }
 
-    seenMessageIdsRef.current.add(payload.message.id);
-    setMessages((current) => integrateMessages(current, [payload.message]));
+    seenMessageIdsRef.current.add(normalizedMessage.id);
+    setMessages((current) => integrateMessages(current, [normalizedMessage]));
 
-    if (payload.message.sender !== viewerRef.current) {
-      setPartner((current) => current ?? payload.message.sender);
+    if (normalizedMessage.sender !== viewerRef.current) {
+      setPartner((current) => current ?? normalizedMessage.sender);
     }
 
     setTypingUser(null);
@@ -292,14 +302,6 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     const clearTypingAfterDelay = (sender: string) => {
       if (typingTimeoutRef.current !== null) {
         window.clearTimeout(typingTimeoutRef.current);
-      }
-
-      if (sendDebounceRef.current !== null) {
-        window.clearTimeout(sendDebounceRef.current);
-      }
-
-      if (sendUnlockTimeoutRef.current !== null) {
-        window.clearTimeout(sendUnlockTimeoutRef.current);
       }
 
       typingTimeoutRef.current = window.setTimeout(() => {
@@ -417,6 +419,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       }
 
       pendingClientIdRef.current = null;
+      sendLockRef.current = false;
       setIsSending(false);
       setError(payload.message);
     };
