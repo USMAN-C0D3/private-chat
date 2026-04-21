@@ -1,4 +1,4 @@
-import { Reply, SmilePlus, SendHorizontal, X } from "lucide-react";
+import { LoaderCircle, Reply, SmilePlus, SendHorizontal, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ChatReplyTarget } from "@/types/api";
@@ -7,6 +7,7 @@ import type { ChatReplyTarget } from "@/types/api";
 interface ComposerProps {
   draft: string;
   disabled: boolean;
+  isSending: boolean;
   connectionLabel: string;
   replyTarget: ChatReplyTarget | null;
   onDraftChange: (value: string) => void;
@@ -18,6 +19,7 @@ interface ComposerProps {
 export function Composer({
   draft,
   disabled,
+  isSending,
   connectionLabel,
   replyTarget,
   onDraftChange,
@@ -122,11 +124,14 @@ export function Composer({
             <textarea
               ref={textareaRef}
               value={draft}
-              disabled={disabled}
+              disabled={disabled || isSending}
               onChange={(event) => onDraftChange(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
+                  if (isSending) {
+                    return;
+                  }
                   onSubmit();
                 }
               }}
@@ -139,12 +144,23 @@ export function Composer({
 
         <button
           type="submit"
-          disabled={disabled || draft.trim().length === 0}
+          disabled={disabled || isSending || draft.trim().length === 0}
           className="flex h-12 w-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#8b5cf6,#3b82f6)] text-white shadow-[0_16px_30px_rgba(59,130,246,0.28)] transition hover:scale-[1.03] active:scale-95 disabled:cursor-default disabled:opacity-55"
           aria-label="Send message"
         >
-          <SendHorizontal className="h-5 w-5" />
+          <SendHorizontal className={`h-5 w-5 ${isSending ? "animate-pulse" : ""}`} />
         </button>
+        {isSending ? (
+          <span className="ml-1.5 inline-flex items-center gap-1.5 self-center text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-100/80">
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            <span>Sending</span>
+            <span className="inline-flex items-center gap-0.5" aria-hidden="true">
+              <span className="h-1 w-1 animate-bounce rounded-full bg-cyan-100/80 [animation-delay:-0.2s]" />
+              <span className="h-1 w-1 animate-bounce rounded-full bg-cyan-100/80 [animation-delay:-0.1s]" />
+              <span className="h-1 w-1 animate-bounce rounded-full bg-cyan-100/80" />
+            </span>
+          </span>
+        ) : null}
       </form>
     </div>
   );

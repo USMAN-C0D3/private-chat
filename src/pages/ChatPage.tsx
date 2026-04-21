@@ -53,6 +53,7 @@ export function ChatPage() {
   const {
     loading,
     loadingOlder,
+    isSending,
     messages,
     partner,
     partnerDisplayName,
@@ -563,6 +564,7 @@ export function ChatPage() {
               connectionLabel={composerStatusLabel}
               disabled={connectionState === "disconnected"}
               draft={draft}
+              isSending={isSending}
               onCancelReply={handleCancelReply}
               onDraftChange={handleDraftChange}
               onSubmit={handleSend}

@@ -27,6 +27,7 @@ const CHAT_BOOTSTRAP_RETRY_DELAY_MS = 600;
 interface UseChatRoomState {
   loading: boolean;
   loadingOlder: boolean;
+  isSending: boolean;
   messages: ChatMessage[];
   partner: Username | null;
   partnerDisplayName: string | null;
@@ -87,6 +88,7 @@ function integrateMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
 export function useChatRoom(enabled: boolean, username: Username | null): UseChatRoomState {
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [partner, setPartner] = useState<Username | null>(null);
   const [partnerDisplayName, setPartnerDisplayName] = useState<string | null>(null);
@@ -108,6 +110,8 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const viewerLastReadRef = useRef<number>(0);
   const refreshInFlightRef = useRef(false);
   const bootstrapRequestIdRef = useRef(0);
+  const sendLockRef = useRef(false);
+  const sendUnlockTimerRef = useRef<number | null>(null);
 
   const delay = useCallback((ms: number) => {
     return new Promise<void>((resolve) => {
@@ -455,6 +459,10 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
 
   function sendMessage(text: string, replyTo: ChatReplyTarget | null = null) {
     const socket = getChatSocket();
+    if (sendLockRef.current) {
+      return false;
+    }
+
     if (!socket.connected) {
       if (!socket.active) {
         socket.connect();
@@ -463,7 +471,19 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       return false;
     }
 
+    if (sendUnlockTimerRef.current !== null) {
+      window.clearTimeout(sendUnlockTimerRef.current);
+    }
+
+    sendLockRef.current = true;
+    setIsSending(true);
     socket.emit("send_message", { text, replyTo });
+
+    sendUnlockTimerRef.current = window.setTimeout(() => {
+      sendLockRef.current = false;
+      setIsSending(false);
+    }, 300);
+
     return true;
   }
 
@@ -496,6 +516,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   return {
     loading,
     loadingOlder,
+    isSending,
     messages,
     partner,
     partnerDisplayName,
