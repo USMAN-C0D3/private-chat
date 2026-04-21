@@ -133,8 +133,10 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const typingTimeoutRef = useRef<number | null>(null);
   const viewerRef = useRef<string | null>(null);
   const viewerLastReadRef = useRef<number>(0);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
   const bootstrapRequestIdRef = useRef(0);
+  const pendingClientIdRef = useRef<string | null>(null);
   const delay = useCallback((ms: number) => {
     return new Promise<void>((resolve) => {
       window.setTimeout(resolve, ms);
@@ -143,6 +145,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
 
   const applyBootstrapPayload = useCallback((payload: ChatBootstrapResponse) => {
     viewerRef.current = payload.viewer;
+    seenMessageIdsRef.current = new Set(payload.messages.map((message) => message.id));
     setMessages((current) => integrateMessages(current, payload.messages));
     setPartner(payload.partner);
     setPartnerDisplayName(payload.partnerDisplayName);
@@ -205,6 +208,32 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     }
   }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry]);
 
+  const handleReceiveMessage = useCallback((payload: ReceiveMessagePayload) => {
+    console.log("RECEIVED", payload.message.id);
+
+    if (
+      payload.message.sender === viewerRef.current
+      && pendingClientIdRef.current
+      && payload.message.id === pendingClientIdRef.current
+    ) {
+      pendingClientIdRef.current = null;
+      setIsSending(false);
+    }
+
+    if (seenMessageIdsRef.current.has(payload.message.id)) {
+      return;
+    }
+
+    seenMessageIdsRef.current.add(payload.message.id);
+    setMessages((current) => integrateMessages(current, [payload.message]));
+
+    if (payload.message.sender !== viewerRef.current) {
+      setPartner((current) => current ?? payload.message.sender);
+    }
+
+    setTypingUser(null);
+  }, []);
+
   useEffect(() => {
     if (!enabled) {
       return;
@@ -223,6 +252,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     setConnectionState("connecting");
     setViewerLastReadId(null);
     setPartnerLastReadId(null);
+    seenMessageIdsRef.current = new Set();
+    pendingClientIdRef.current = null;
+    setIsSending(false);
 
     const flushPendingMessages = () => {
       flushHandleRef.current = null;
@@ -265,6 +297,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     const handleConnect = () => {
       setConnectionState("connected");
       setError(null);
+      console.log("CONNECTED:", socket.id);
     };
 
     const handleDisconnect = () => {
@@ -306,24 +339,26 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
         return;
       }
 
-      pendingMessagesRef.current.push(...incoming);
-      const latestIncoming = incoming[incoming.length - 1];
+      const uniqueIncoming: ChatMessage[] = [];
+      for (const message of incoming) {
+        if (seenMessageIdsRef.current.has(message.id)) {
+          continue;
+        }
+        seenMessageIdsRef.current.add(message.id);
+        uniqueIncoming.push(message);
+      }
+
+      if (uniqueIncoming.length === 0) {
+        return;
+      }
+
+      pendingMessagesRef.current.push(...uniqueIncoming);
+      const latestIncoming = uniqueIncoming[uniqueIncoming.length - 1];
       if (latestIncoming && latestIncoming.sender !== viewerRef.current) {
         setPartner((current) => current ?? latestIncoming.sender);
       }
       setTypingUser(null);
       scheduleFlush();
-    };
-
-    const handleReceiveMessage = (payload: ReceiveMessagePayload) => {
-      if (!active) {
-        return;
-      }
-
-      if (payload.message.sender === viewerRef.current) {
-        setIsSending(false);
-      }
-      enqueueMessages([payload.message]);
     };
 
     const handleReceiveMessages = (payload: ReceiveMessagesBatchPayload) => {
@@ -369,9 +404,21 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
         return;
       }
 
+      pendingClientIdRef.current = null;
       setIsSending(false);
       setError(payload.message);
     };
+
+    socket.off("connect", handleConnect);
+    socket.off("disconnect", handleDisconnect);
+    socket.off("connect_error", handleConnectError);
+    socket.off("chat_state", handleChatState);
+    socket.off("presence", handlePresence);
+    socket.off("receive_message", handleReceiveMessage);
+    socket.off("receive_messages", handleReceiveMessages);
+    socket.off("messages_read", handleMessagesRead);
+    socket.off("typing", handleTyping);
+    socket.off("chat_error", handleChatError);
 
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
@@ -445,7 +492,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       socket.off("chat_error", handleChatError);
       socket.disconnect();
     };
-  }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry, refreshMessages, username]);
+  }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry, handleReceiveMessage, refreshMessages, username]);
 
   async function loadOlder() {
     if (loadingOlder || nextCursor === null) {
@@ -455,6 +502,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     setLoadingOlder(true);
     try {
       const payload = await api.getChatHistory(nextCursor);
+      for (const message of payload.messages) {
+        seenMessageIdsRef.current.add(message.id);
+      }
       setMessages((current) => integrateMessages(current, payload.messages));
       setHasMore(payload.hasMore);
       setNextCursor(payload.nextCursor);
@@ -473,6 +523,10 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   function sendMessage(text: string, replyTo: ChatReplyTarget | null = null) {
     const normalizedText = text.trim();
     if (!normalizedText) {
+      return false;
+    }
+
+    if (isSending) {
       return false;
     }
 
@@ -498,11 +552,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     };
 
     setMessages((current) => integrateMessages(current, [optimisticMessage]));
+    pendingClientIdRef.current = clientId;
     setIsSending(true);
-    socket.emit("send_message", { text: normalizedText, replyTo, clientId });
-    window.setTimeout(() => {
-      setIsSending(false);
-    }, 80);
+    socket.emit("send_message", { id: clientId, text: normalizedText, replyTo, clientId });
 
     return true;
   }

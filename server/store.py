@@ -153,7 +153,7 @@ class ChatStore:
         reply_to: dict[str, Any] | None = None,
         *,
         client_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         normalized_text = str(text)
         if not normalized_text:
             raise ValueError("Message text is required")
@@ -194,9 +194,13 @@ class ChatStore:
                     reply_to_text
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(public_id) DO NOTHING
                 """,
                 (public_id, sender, normalized_text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text),
             )
+            if cursor.rowcount == 0:
+                return None
+
             self._trim_messages(connection)
 
             return ChatMessage(
@@ -225,14 +229,24 @@ class ChatStore:
                 public_id = str(uuid4())
                 cursor = connection.execute(
                     """
-                    INSERT INTO messages (public_id, sender, text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text)
+                    INSERT INTO messages (
+                        public_id,
+                        sender,
+                        text,
+                        timestamp,
+                        reply_to_id,
+                        reply_to_public_id,
+                        client_id,
+                        reply_to_text
+                    )
                     VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL)
                     """,
                     (public_id, sender, text, timestamp),
                 )
+
                 payloads.append(
                     ChatMessage(
-                        id=public_id,
+                        id=str(public_id),
                         sequence=int(cursor.lastrowid),
                         sender=sender,
                         text=text,

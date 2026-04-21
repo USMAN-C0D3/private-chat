@@ -103,7 +103,7 @@ class PostgresChatStore:
         reply_to: dict[str, Any] | None = None,
         *,
         client_id: str | None = None,
-    ):
+    ) -> dict[str, Any] | None:
         reply_to_id = None
         reply_to_public_id = None
         reply_to_text = None
@@ -120,17 +120,24 @@ class PostgresChatStore:
                 if row:
                     reply_to_id = int(row[0])
 
-            public_id = str(uuid4())
+            # Use client-provided id as the canonical message id when available.
+            public_id = client_id if client_id else str(uuid4())
             timestamp = self._timestamp_ms()
             cur.execute(
                 """
                 INSERT INTO messages (public_id, sender, text, reply_to_id, reply_to_public_id, reply_to_text, client_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (public_id) DO NOTHING
                 RETURNING id, created_at
                 """,
                 (public_id, sender, text, reply_to_id, reply_to_public_id, reply_to_text, client_id),
             )
-            sequence_id, created_at = cur.fetchone()
+            inserted = cur.fetchone()
+            if inserted is None:
+                cur.close()
+                return None
+
+            sequence_id, created_at = inserted
             cur.close()
 
             self._trim_messages(conn)
@@ -155,7 +162,9 @@ class PostgresChatStore:
             normalized = str(text).strip()
             if not normalized:
                 continue
-            messages.append(self.append(sender, normalized))
+            created = self.append(sender, normalized)
+            if created is not None:
+                messages.append(created)
         return messages
 
     def recent_page(self, limit: int):

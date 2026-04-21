@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from threading import Lock
 from typing import Any
+from uuid import uuid4
 
 from flask import current_app, request
 from flask_socketio import SocketIO, disconnect, emit, join_room, leave_room
@@ -106,7 +107,10 @@ def register_socket_events(socketio: SocketIO) -> None:
             data = payload or {}
             text = str(data.get("text", "")).strip()
             reply_to_payload = data.get("replyTo")
-            client_id = str(data.get("clientId", "")).strip() or None
+            client_id = str(data.get("id", "")).strip() or str(data.get("clientId", "")).strip() or None
+
+            if not client_id:
+                client_id = str(uuid4())
 
             if not text:
                 emit("chat_error", {"message": "Message text is required."})
@@ -139,11 +143,17 @@ def register_socket_events(socketio: SocketIO) -> None:
                 reply_to=normalized_reply_to,
                 client_id=client_id,
             )
+            if message is None:
+                return
+
+            current_app.logger.debug("SAVE message=%s", message.get("id"))
+            current_app.logger.debug("HANDLER CALLED message=%s clientId=%s", message.get("id"), client_id)
             if normalized_reply_to is not None:
                 message["replyTo"] = normalized_reply_to
             payload = {"message": message}
             room = current_app.config["PRIVATE_CHAT_ROOM"]
             socketio.emit("receive_message", payload, room=room)
+            current_app.logger.debug("EMIT message=%s", message.get("id"))
         except Exception:
             current_app.logger.exception("Unhandled error in send_message")
             emit("chat_error", {"message": "Unable to send message right now."})

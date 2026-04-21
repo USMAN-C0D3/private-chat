@@ -29,6 +29,9 @@ export function getChatSocket(username: string | null = null): Socket {
       randomizationFactor: 0.35,
       reconnectionAttempts: Infinity,
     });
+    chatSocket.on("connect", () => {
+      console.log("CONNECTED:", chatSocket?.id);
+    });
     chatSocketUser = username;
   }
 
