@@ -21,6 +21,13 @@ def _online_users() -> list[str]:
         return sorted(set(_socket_users.values()))
 
 
+def _emit_presence(socketio: SocketIO) -> None:
+    payload = {"onlineUsers": _online_users()}
+    room = current_app.config["PRIVATE_CHAT_ROOM"]
+    socketio.emit("presence", payload, room=room)
+    socketio.emit("user_online", payload, room=room)
+
+
 def _bot_owner_username() -> str:
     return primary_account_username()
 
@@ -73,11 +80,7 @@ def register_socket_events(socketio: SocketIO) -> None:
                 "partnerLastReadId": services.read_receipts.last_read_for(partner),
             },
         )
-        socketio.emit(
-            "presence",
-            {"onlineUsers": _online_users()},
-            room=current_app.config["PRIVATE_CHAT_ROOM"],
-        )
+        _emit_presence(socketio)
 
     @socketio.on("disconnect")
     def handle_disconnect():
@@ -92,11 +95,7 @@ def register_socket_events(socketio: SocketIO) -> None:
                     bot_manager.set_bot(username, None)
 
             leave_room(current_app.config["PRIVATE_CHAT_ROOM"])
-            socketio.emit(
-                "presence",
-                {"onlineUsers": _online_users()},
-                room=current_app.config["PRIVATE_CHAT_ROOM"],
-            )
+            _emit_presence(socketio)
 
     @socketio.on("send_message")
     def handle_send_message(payload: dict[str, Any] | None = None):
@@ -141,11 +140,10 @@ def register_socket_events(socketio: SocketIO) -> None:
             message = services.store.append(username, text, reply_to=normalized_reply_to)
             if normalized_reply_to is not None:
                 message["replyTo"] = normalized_reply_to
-            socketio.emit(
-                "receive_message",
-                {"message": message},
-                room=current_app.config["PRIVATE_CHAT_ROOM"],
-            )
+            payload = {"message": message}
+            room = current_app.config["PRIVATE_CHAT_ROOM"]
+            socketio.emit("receive_message", payload, room=room)
+            socketio.emit("new_message", payload, room=room)
         except Exception:
             current_app.logger.exception("Unhandled error in send_message")
             emit("chat_error", {"message": "Unable to send message right now."})

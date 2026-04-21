@@ -276,6 +276,10 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       setOnlineUsers(payload.onlineUsers);
     };
 
+    const handleUserOnline = (payload: PresencePayload) => {
+      handlePresence(payload);
+    };
+
     const enqueueMessages = (incoming: ChatMessage[]) => {
       if (!active || incoming.length === 0) {
         return;
@@ -296,6 +300,10 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       }
 
       enqueueMessages([payload.message]);
+    };
+
+    const handleNewMessage = (payload: ReceiveMessagePayload) => {
+      handleReceiveMessage(payload);
     };
 
     const handleReceiveMessages = (payload: ReceiveMessagesBatchPayload) => {
@@ -349,7 +357,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     socket.on("connect_error", handleConnectError);
     socket.on("chat_state", handleChatState);
     socket.on("presence", handlePresence);
+    socket.on("user_online", handleUserOnline);
     socket.on("receive_message", handleReceiveMessage);
+    socket.on("new_message", handleNewMessage);
     socket.on("receive_messages", handleReceiveMessages);
     socket.on("messages_read", handleMessagesRead);
     socket.on("typing", handleTyping);
@@ -409,7 +419,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       socket.off("connect_error", handleConnectError);
       socket.off("chat_state", handleChatState);
       socket.off("presence", handlePresence);
+      socket.off("user_online", handleUserOnline);
       socket.off("receive_message", handleReceiveMessage);
+      socket.off("new_message", handleNewMessage);
       socket.off("receive_messages", handleReceiveMessages);
       socket.off("messages_read", handleMessagesRead);
       socket.off("typing", handleTyping);
