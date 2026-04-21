@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Flask
 from flask_socketio import SocketIO
 from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_cors import CORS   # 🔥 ADDED
 
 from .accounts import load_private_accounts
 from .config import Config
@@ -21,6 +22,14 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     app = Flask(__name__)
     app.config.from_object(config_object or Config)
+
+    # 🔥 CORS FIX (CRITICAL)
+    CORS(
+        app,
+        supports_credentials=True,
+        origins=app.config["SOCKET_IO_CORS_ORIGINS"],
+    )
+
     app.config["PRIVATE_ACCOUNTS"] = app.config.get("PRIVATE_ACCOUNTS") or load_private_accounts(app.config["APP_ENV"])
 
     if app.config["APP_ENV"] == "production" and app.config["SECRET_KEY"] == "change-me-in-production":
@@ -46,6 +55,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
         max_attempts=app.config["LOGIN_RATE_LIMIT_MAX_ATTEMPTS"],
         window_seconds=app.config["LOGIN_RATE_LIMIT_WINDOW_SECONDS"],
     )
+
     register_routes(app)
     app.extensions["chat_services"] = create_chat_services(app.config, socketio)
     register_socket_events(socketio)
