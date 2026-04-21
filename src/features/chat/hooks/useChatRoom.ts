@@ -217,7 +217,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     if (
       payload.message.sender === viewerRef.current
       && pendingClientIdRef.current
-      && payload.message.id === pendingClientIdRef.current
+      && payload.message.clientId === pendingClientIdRef.current
     ) {
       pendingClientIdRef.current = null;
       sendLockRef.current = false;
