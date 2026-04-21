@@ -137,6 +137,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const refreshInFlightRef = useRef(false);
   const bootstrapRequestIdRef = useRef(0);
   const pendingClientIdRef = useRef<string | null>(null);
+  const sendLockRef = useRef(false);
+  const sendDebounceRef = useRef<number | null>(null);
+  const sendUnlockTimeoutRef = useRef<number | null>(null);
   const delay = useCallback((ms: number) => {
     return new Promise<void>((resolve) => {
       window.setTimeout(resolve, ms);
@@ -217,6 +220,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       && payload.message.id === pendingClientIdRef.current
     ) {
       pendingClientIdRef.current = null;
+      sendLockRef.current = false;
       setIsSending(false);
     }
 
@@ -254,6 +258,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     setPartnerLastReadId(null);
     seenMessageIdsRef.current = new Set();
     pendingClientIdRef.current = null;
+    sendLockRef.current = false;
     setIsSending(false);
 
     const flushPendingMessages = () => {
@@ -287,6 +292,14 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     const clearTypingAfterDelay = (sender: string) => {
       if (typingTimeoutRef.current !== null) {
         window.clearTimeout(typingTimeoutRef.current);
+      }
+
+      if (sendDebounceRef.current !== null) {
+        window.clearTimeout(sendDebounceRef.current);
+      }
+
+      if (sendUnlockTimeoutRef.current !== null) {
+        window.clearTimeout(sendUnlockTimeoutRef.current);
       }
 
       typingTimeoutRef.current = window.setTimeout(() => {
@@ -526,7 +539,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       return false;
     }
 
-    if (isSending) {
+    if (isSending || sendLockRef.current) {
       return false;
     }
 
@@ -553,8 +566,29 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
 
     setMessages((current) => integrateMessages(current, [optimisticMessage]));
     pendingClientIdRef.current = clientId;
+    sendLockRef.current = true;
     setIsSending(true);
-    socket.emit("send_message", { id: clientId, text: normalizedText, replyTo, clientId });
+
+    if (sendDebounceRef.current !== null) {
+      window.clearTimeout(sendDebounceRef.current);
+    }
+
+    sendDebounceRef.current = window.setTimeout(() => {
+      console.log("SENDING:", clientId);
+      socket.emit("send_message", { id: clientId, text: normalizedText, replyTo, clientId });
+    }, 100);
+
+    if (sendUnlockTimeoutRef.current !== null) {
+      window.clearTimeout(sendUnlockTimeoutRef.current);
+    }
+
+    sendUnlockTimeoutRef.current = window.setTimeout(() => {
+      if (pendingClientIdRef.current === clientId) {
+        pendingClientIdRef.current = null;
+        sendLockRef.current = false;
+        setIsSending(false);
+      }
+    }, 8000);
 
     return true;
   }
