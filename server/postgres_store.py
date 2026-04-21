@@ -8,17 +8,18 @@ class PostgresChatStore:
     def _conn(self):
         return psycopg2.connect(self.database_url)
 
+    # ✅ FIXED: removed receiver column
     def append(self, sender, text, reply_to=None):
         conn = self._conn()
         cur = conn.cursor()
 
         cur.execute(
             """
-            INSERT INTO messages (sender, receiver, text)
-            VALUES (%s, %s, %s)
+            INSERT INTO messages (sender, text)
+            VALUES (%s, %s)
             RETURNING id, created_at
             """,
-            (sender, "global", text),
+            (sender, text),
         )
 
         msg_id, created_at = cur.fetchone()
