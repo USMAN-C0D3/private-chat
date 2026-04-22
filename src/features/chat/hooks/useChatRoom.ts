@@ -239,7 +239,17 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     }
 
     seenMessageIdsRef.current.add(normalizedMessage.id);
-    setMessages((current) => integrateMessages(current, [normalizedMessage]));
+    setMessages((current) => {
+      const filtered = current.filter(
+        (message) => !(message.clientId && normalizedMessage.clientId && message.clientId === normalizedMessage.clientId),
+      );
+
+      if (filtered.some((message) => message.id === normalizedMessage.id)) {
+        return filtered;
+      }
+
+      return integrateMessages(filtered, [normalizedMessage]);
+    });
 
     if (normalizedMessage.sender !== viewerRef.current) {
       setPartner((current) => current ?? normalizedMessage.sender);
