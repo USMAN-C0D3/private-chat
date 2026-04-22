@@ -157,15 +157,43 @@ class PostgresChatStore:
         }
 
     def append_many(self, sender: str, texts: Iterable[str]):
-        messages = []
-        for text in texts:
-            normalized = str(text).strip()
-            if not normalized:
-                continue
-            created = self.append(sender, normalized)
-            if created is not None:
-                messages.append(created)
-        return messages
+        sanitized_texts = [str(text).strip() for text in texts if str(text).strip()]
+        if not sanitized_texts:
+            return []
+
+        payloads = []
+        with self._write_lock, self._connection() as conn:
+            cur = conn.cursor()
+            for text in sanitized_texts:
+                public_id = str(uuid4())
+                cur.execute(
+                    """
+                    INSERT INTO messages (public_id, sender, text, reply_to_id, reply_to_public_id, reply_to_text, client_id)
+                    VALUES (%s, %s, %s, NULL, NULL, NULL, NULL)
+                    RETURNING id, created_at
+                    """,
+                    (public_id, sender, text),
+                )
+                inserted = cur.fetchone()
+                if inserted is None:
+                    continue
+
+                sequence_id, created_at = inserted
+                payloads.append(
+                    {
+                        "id": public_id,
+                        "sequence": int(sequence_id),
+                        "sender": sender,
+                        "text": text,
+                        "timestamp": self._timestamp_ms(created_at),
+                        "clientId": None,
+                        "replyTo": None,
+                    }
+                )
+            cur.close()
+            self._trim_messages(conn)
+
+        return payloads
 
     def recent_page(self, limit: int):
         with self._connection() as conn:

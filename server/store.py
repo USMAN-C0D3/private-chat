@@ -104,6 +104,9 @@ def _ensure_reply_columns(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_public_id ON messages(public_id)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_client_id ON messages(client_id)"
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -171,6 +174,20 @@ class ChatStore:
                 reply_to_text = raw_text
 
         with self._write_lock, self._connection() as connection:
+            if client_id:
+                existing_by_client = connection.execute(
+                    """
+                    SELECT id, public_id, sender, text, timestamp, reply_to_id, reply_to_public_id, client_id, reply_to_text
+                    FROM messages
+                    WHERE client_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (client_id,),
+                ).fetchone()
+                if existing_by_client is not None:
+                    return self._row_to_payload(existing_by_client)
+
             if reply_to_public_id:
                 parent_row = connection.execute(
                     "SELECT id FROM messages WHERE public_id = ? LIMIT 1",

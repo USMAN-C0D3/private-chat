@@ -84,6 +84,7 @@ function MessageListInner(
   const messageIndexByIdRef = useRef(new Map<string, number>());
   const prevMessageCountRef = useRef(messages.length);
   const prevFirstMessageIdRef = useRef<string | null>(messages[0]?.id ?? null);
+  const prevLastMessageIdRef = useRef<string | null>(messages[messages.length - 1]?.id ?? null);
 
   const updateVisibleStartIndex = useCallback((nextIndex: number) => {
     const boundedStart = Math.max(0, nextIndex);
@@ -137,9 +138,29 @@ function MessageListInner(
   }, [messages]);
 
   useEffect(() => {
-    const nextStart = Math.max(0, messages.length - WINDOW_SIZE);
-    updateVisibleStartIndex(nextStart);
-  }, [messages.length, updateVisibleStartIndex]);
+    const previousCount = prevMessageCountRef.current;
+    const previousFirstId = prevFirstMessageIdRef.current;
+    const previousLastId = prevLastMessageIdRef.current;
+    const currentFirstId = messages[0]?.id ?? null;
+    const currentLastId = messages[messages.length - 1]?.id ?? null;
+    const countDelta = messages.length - previousCount;
+    const didPrepend = countDelta > 0 && currentFirstId !== previousFirstId;
+    const didAppend = countDelta > 0 && currentLastId !== previousLastId;
+
+    if (messages.length <= WINDOW_SIZE) {
+      updateVisibleStartIndex(0);
+      return;
+    }
+
+    if (didPrepend) {
+      updateVisibleStartIndex(Math.max(0, visibleStartIndexRef.current - countDelta));
+      return;
+    }
+
+    if (didAppend && atBottomRef.current) {
+      updateVisibleStartIndex(Math.max(0, messages.length - WINDOW_SIZE));
+    }
+  }, [messages, updateVisibleStartIndex]);
 
   const requestOlder = useCallback(async () => {
     if (loadOlderInFlightRef.current || loadingOlderRef.current || !hasMoreRef.current) {
@@ -168,10 +189,7 @@ function MessageListInner(
     const currentFirstId = messages[0]?.id ?? null;
     const prependedCount = Math.max(0, messages.length - previousCount);
     const didPrepend = prependedCount > 0 && currentFirstId !== previousFirstId;
-
     if (didPrepend) {
-      updateVisibleStartIndex(Math.max(0, visibleStartIndexRef.current - prependedCount));
-
       const anchor = prependingAnchorRef.current;
       if (anchor) {
         window.requestAnimationFrame(() => {
@@ -189,7 +207,8 @@ function MessageListInner(
     prependingAnchorRef.current = null;
     prevMessageCountRef.current = messages.length;
     prevFirstMessageIdRef.current = currentFirstId;
-  }, [messages, updateVisibleStartIndex]);
+    prevLastMessageIdRef.current = messages[messages.length - 1]?.id ?? null;
+  }, [messages]);
 
   useEffect(() => {
     const element = scrollParentRef.current;
@@ -204,7 +223,7 @@ function MessageListInner(
 
       scrollRafRef.current = window.requestAnimationFrame(() => {
         scrollRafRef.current = null;
-      const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+        const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
         const nextIsAtBottom = distanceFromBottom < 140;
         if (atBottomRef.current !== nextIsAtBottom) {
           atBottomRef.current = nextIsAtBottom;

@@ -181,12 +181,31 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const viewerRef = useRef<string | null>(null);
   const viewerLastReadRef = useRef<number>(0);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const seenClientIdsRef = useRef<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
   const bootstrapRequestIdRef = useRef(0);
   const pendingClientIdRef = useRef<string | null>(null);
   const sendLockRef = useRef(false);
   const sendDebounceRef = useRef<number | null>(null);
   const sendUnlockTimeoutRef = useRef<number | null>(null);
+  const isDuplicateMessage = useCallback((message: ChatMessage) => {
+    const seenIds = seenMessageIdsRef.current;
+    const seenClientIds = seenClientIdsRef.current;
+
+    if (seenIds.has(message.id)) {
+      return true;
+    }
+    if (message.clientId && seenClientIds.has(message.clientId)) {
+      return true;
+    }
+
+    seenIds.add(message.id);
+    if (message.clientId) {
+      seenClientIds.add(message.clientId);
+    }
+
+    return false;
+  }, []);
   const delay = useCallback((ms: number) => {
     return new Promise<void>((resolve) => {
       window.setTimeout(resolve, ms);
@@ -196,6 +215,11 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   const applyBootstrapPayload = useCallback((payload: ChatBootstrapResponse) => {
     viewerRef.current = payload.viewer;
     seenMessageIdsRef.current = new Set(payload.messages.map((message) => message.id));
+    seenClientIdsRef.current = new Set(
+      payload.messages
+        .map((message) => message.clientId)
+        .filter((clientId): clientId is string => Boolean(clientId)),
+    );
     setMessages((current) => integrateMessages(current, payload.messages));
     setPartner(payload.partner);
     setPartnerDisplayName(payload.partnerDisplayName);
@@ -259,8 +283,6 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
   }, [applyBootstrapPayload, enabled, fetchBootstrapWithRetry]);
 
   const handleReceiveMessage = useCallback((payload: ReceiveMessagePayload) => {
-    console.log("RECEIVED", payload.message.id);
-
     const pendingClientId = pendingClientIdRef.current;
     const isSelfMessage = payload.message.sender === viewerRef.current;
     const matchesPending = Boolean(
@@ -281,11 +303,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
       setIsSending(false);
     }
 
-    if (seenMessageIdsRef.current.has(normalizedMessage.id)) {
+    if (isDuplicateMessage(normalizedMessage)) {
       return;
     }
-
-    seenMessageIdsRef.current.add(normalizedMessage.id);
     setMessages((current) => {
       const filtered = current.filter(
         (message) => !(message.clientId && normalizedMessage.clientId && message.clientId === normalizedMessage.clientId),
@@ -303,7 +323,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     }
 
     setTypingUser(null);
-  }, []);
+  }, [isDuplicateMessage]);
 
   useEffect(() => {
     if (!enabled) {
@@ -324,6 +344,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     setViewerLastReadId(null);
     setPartnerLastReadId(null);
     seenMessageIdsRef.current = new Set();
+    seenClientIdsRef.current = new Set();
     pendingClientIdRef.current = null;
     sendLockRef.current = false;
     setIsSending(false);
@@ -412,10 +433,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
 
       const uniqueIncoming: ChatMessage[] = [];
       for (const message of incoming) {
-        if (seenMessageIdsRef.current.has(message.id)) {
+        if (isDuplicateMessage(message)) {
           continue;
         }
-        seenMessageIdsRef.current.add(message.id);
         uniqueIncoming.push(message);
       }
 
@@ -574,7 +594,7 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     try {
       const payload = await api.getChatHistory(nextCursor);
       for (const message of payload.messages) {
-        seenMessageIdsRef.current.add(message.id);
+        isDuplicateMessage(message);
       }
       setMessages((current) => integrateMessages(current, payload.messages));
       setHasMore(payload.hasMore);
@@ -611,6 +631,9 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     }
 
     const clientId = generateClientId();
+    if (pendingClientIdRef.current === clientId) {
+      return false;
+    }
     const optimisticMessage: ChatMessage = {
       id: `optimistic:${clientId}`,
       clientId,
@@ -632,7 +655,6 @@ export function useChatRoom(enabled: boolean, username: Username | null): UseCha
     }
 
     sendDebounceRef.current = window.setTimeout(() => {
-      console.log("SENDING:", clientId);
       socket.emit("send_message", { id: clientId, text: normalizedText, replyTo, clientId });
     }, 100);
 

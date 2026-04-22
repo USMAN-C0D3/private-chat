@@ -15,6 +15,10 @@ from .services import get_chat_services
 
 _socket_users: dict[str, str] = {}
 _presence_lock = Lock()
+_DEFAULT_BOT_BATCH_SIZE = 200
+_DEFAULT_BOT_SPEED = 3000
+_MAX_BOT_BATCH_SIZE = 2000
+_MAX_BOT_SPEED = 50000
 
 def _online_users() -> list[str]:
     with _presence_lock:
@@ -137,11 +141,6 @@ def register_socket_events(socketio: SocketIO) -> None:
                     }
 
             services = get_chat_services()
-            bot_manager = get_bot_manager()
-            bot = bot_manager.get_bot(username)
-            if bot and bot.is_running:
-                current_app.logger.debug("WARNING: bot still running during user send")
-
             message = services.store.append(
                 username,
                 text,
@@ -151,14 +150,11 @@ def register_socket_events(socketio: SocketIO) -> None:
             if message is None:
                 return
 
-            current_app.logger.debug("SAVE message=%s", message.get("id"))
-            current_app.logger.debug("HANDLER CALLED message=%s clientId=%s", message.get("id"), client_id)
             if normalized_reply_to is not None:
                 message["replyTo"] = normalized_reply_to
             payload = {"message": message}
             room = current_app.config["PRIVATE_CHAT_ROOM"]
             socketio.emit("receive_message", payload, room=room)
-            current_app.logger.debug("EMIT message=%s", message.get("id"))
         except Exception:
             current_app.logger.exception("Unhandled error in send_message")
             emit("chat_error", {"message": "Unable to send message right now."})
@@ -237,20 +233,41 @@ def register_socket_events(socketio: SocketIO) -> None:
             if existing:
                 existing.is_running = False
                 bot_manager.set_bot(username, None)
-                current_app.logger.debug("OLD BOT FORCE STOPPED")
 
             data = payload or {}
             words = _resolve_bot_words(username, data)
-            speed = data.get("speed", 10)
+            app = current_app._get_current_object()
+            speed = data.get("speed", _DEFAULT_BOT_SPEED)
             target = data.get("target", 21600)
             mode = data.get("mode", "sequential")
             delay = data.get("delay", 0)
+            batch_size = data.get("batchSize", app.config.get("BOT_EMIT_BATCH_SIZE", _DEFAULT_BOT_BATCH_SIZE))
+            try:
+                speed = int(speed)
+            except (TypeError, ValueError):
+                speed = _DEFAULT_BOT_SPEED
+            try:
+                batch_size = int(batch_size)
+            except (TypeError, ValueError):
+                batch_size = _DEFAULT_BOT_BATCH_SIZE
+            try:
+                target = int(target)
+            except (TypeError, ValueError):
+                target = 21600
+            try:
+                delay = float(delay)
+            except (TypeError, ValueError):
+                delay = 0
+
+            speed = max(0, min(speed, _MAX_BOT_SPEED))
+            batch_size = max(1, min(batch_size, _MAX_BOT_BATCH_SIZE))
+            target = max(1, target)
+            delay = max(0.0, delay)
 
             if len(words) == 0:
                 emit("bot_error", {"message": "Invalid wordlist"})
                 return
 
-            app = current_app._get_current_object()
             room = app.config["PRIVATE_CHAT_ROOM"]
 
             # Create and start bot task
@@ -262,6 +279,8 @@ def register_socket_events(socketio: SocketIO) -> None:
                 mode=mode,
                 delay=delay,
             )
+            bot.speed = speed
+            bot.batch_size = batch_size
             bot.is_running = True
             bot_manager.set_bot(username, bot)
 
@@ -299,7 +318,6 @@ def register_socket_events(socketio: SocketIO) -> None:
             if bot:
                 bot.is_running = False
                 bot_manager.set_bot(username, None)
-                current_app.logger.debug("BOT MANUALLY STOPPED")
                 emit("bot_stopped", {"count": bot.message_count})
 
         except Exception:
@@ -312,6 +330,7 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
         try:
             services = get_chat_services()
             bot_manager = get_bot_manager()
+            batch_size = max(1, min(int(getattr(bot, "batch_size", _DEFAULT_BOT_BATCH_SIZE)), _MAX_BOT_BATCH_SIZE))
             progress_interval = app.config["BOT_PROGRESS_INTERVAL"]
             last_progress_count = 0
 
@@ -332,21 +351,26 @@ def _run_bot_task(app, socketio: SocketIO, bot: BotTask, username: str, room: st
                 if bot.message_count >= bot.target:
                     break
 
-                message = services.store.append(username, bot.get_next_message())
-                if message is None:
+                remaining = bot.target - bot.message_count
+                current_batch_size = min(batch_size, remaining)
+                texts = [bot.get_next_message() for _ in range(current_batch_size)]
+
+                messages = services.store.append_many(username, texts)
+                if not messages:
                     continue
-                bot.message_count += 1
 
-                app.logger.debug("BOT EMIT message=%s", message.get("id"))
+                bot.message_count += len(messages)
 
-                socketio.emit("receive_message", {"message": message}, room=room)
+                socketio.emit("receive_messages", {"messages": messages}, room=room)
 
                 if bot.message_count - last_progress_count >= progress_interval or bot.message_count >= bot.target:
                     last_progress_count = bot.message_count
                     socketio.emit("bot_progress", {"count": bot.message_count}, room=room)
 
                 if bot.speed > 0:
-                    socketio.sleep(1 / bot.speed)
+                    socketio.sleep(len(messages) / bot.speed)
+                else:
+                    socketio.sleep(0)
 
             # Clean exit
             bot.is_running = False
