@@ -9,7 +9,6 @@ import {
   useState,
   type Ref,
 } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import { LoaderCircle, MessageCircleHeart } from "lucide-react";
 
 import type { ChatMessage } from "@/types/api";
@@ -69,16 +68,30 @@ function MessageListInner(
   }: MessageListProps,
   ref: Ref<MessageListHandle>,
 ) {
+  const WINDOW_SIZE = 300;
+  const LOAD_OLDER_THRESHOLD_PX = 120;
   const scrollParentRef = useRef<HTMLDivElement | null>(null);
   const [swipeEnabled, setSwipeEnabled] = useState(false);
+  const [visibleStartIndex, setVisibleStartIndex] = useState(0);
+  const visibleStartIndexRef = useRef(0);
+  const atBottomRef = useRef(true);
+  const loadingOlderRef = useRef(loadingOlder);
+  const hasMoreRef = useRef(hasMore);
+  const onLoadOlderRef = useRef(onLoadOlder);
+  const loadOlderInFlightRef = useRef(false);
+  const scrollRafRef = useRef<number | null>(null);
+  const prependingAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  const messageIndexByIdRef = useRef(new Map<string, number>());
+  const prevMessageCountRef = useRef(messages.length);
+  const prevFirstMessageIdRef = useRef<string | null>(messages[0]?.id ?? null);
 
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => scrollParentRef.current,
-    estimateSize: () => 94,
-    overscan: 8,
-    getItemKey: (index) => messages[index]?.id ?? index,
-  });
+  const updateVisibleStartIndex = useCallback((nextIndex: number) => {
+    const boundedStart = Math.max(0, nextIndex);
+    if (boundedStart !== visibleStartIndexRef.current) {
+      visibleStartIndexRef.current = boundedStart;
+      setVisibleStartIndex(boundedStart);
+    }
+  }, []);
 
   useImperativeHandle(
     ref,
@@ -104,22 +117,115 @@ function MessageListInner(
   );
 
   useEffect(() => {
+    loadingOlderRef.current = loadingOlder;
+  }, [loadingOlder]);
+
+  useEffect(() => {
+    hasMoreRef.current = hasMore;
+  }, [hasMore]);
+
+  useEffect(() => {
+    onLoadOlderRef.current = onLoadOlder;
+  }, [onLoadOlder]);
+
+  useEffect(() => {
+    const map = new Map<string, number>();
+    messages.forEach((message, index) => {
+      map.set(message.id, index);
+    });
+    messageIndexByIdRef.current = map;
+  }, [messages]);
+
+  useEffect(() => {
+    const nextStart = Math.max(0, messages.length - WINDOW_SIZE);
+    updateVisibleStartIndex(nextStart);
+  }, [messages.length, updateVisibleStartIndex]);
+
+  const requestOlder = useCallback(async () => {
+    if (loadOlderInFlightRef.current || loadingOlderRef.current || !hasMoreRef.current) {
+      return;
+    }
+
+    const element = scrollParentRef.current;
+    if (element) {
+      prependingAnchorRef.current = {
+        scrollTop: element.scrollTop,
+        scrollHeight: element.scrollHeight,
+      };
+    }
+
+    loadOlderInFlightRef.current = true;
+    try {
+      await onLoadOlderRef.current();
+    } finally {
+      loadOlderInFlightRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    const previousCount = prevMessageCountRef.current;
+    const previousFirstId = prevFirstMessageIdRef.current;
+    const currentFirstId = messages[0]?.id ?? null;
+    const prependedCount = Math.max(0, messages.length - previousCount);
+    const didPrepend = prependedCount > 0 && currentFirstId !== previousFirstId;
+
+    if (didPrepend) {
+      updateVisibleStartIndex(Math.max(0, visibleStartIndexRef.current - prependedCount));
+
+      const anchor = prependingAnchorRef.current;
+      if (anchor) {
+        window.requestAnimationFrame(() => {
+          const element = scrollParentRef.current;
+          if (!element) {
+            return;
+          }
+
+          const nextScrollTop = anchor.scrollTop + (element.scrollHeight - anchor.scrollHeight);
+          element.scrollTop = nextScrollTop;
+        });
+      }
+    }
+
+    prependingAnchorRef.current = null;
+    prevMessageCountRef.current = messages.length;
+    prevFirstMessageIdRef.current = currentFirstId;
+  }, [messages, updateVisibleStartIndex]);
+
+  useEffect(() => {
     const element = scrollParentRef.current;
     if (!element) {
       return;
     }
 
     const handleScroll = () => {
+      if (scrollRafRef.current !== null) {
+        return;
+      }
+
+      scrollRafRef.current = window.requestAnimationFrame(() => {
+        scrollRafRef.current = null;
       const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-      onBottomChange(distanceFromBottom < 140);
+        const nextIsAtBottom = distanceFromBottom < 140;
+        if (atBottomRef.current !== nextIsAtBottom) {
+          atBottomRef.current = nextIsAtBottom;
+          onBottomChange(nextIsAtBottom);
+        }
+
+        if (element.scrollTop <= LOAD_OLDER_THRESHOLD_PX && hasMoreRef.current && !loadingOlderRef.current) {
+          void requestOlder();
+        }
+      });
     };
 
     handleScroll();
     element.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
       element.removeEventListener("scroll", handleScroll);
     };
-  }, [onBottomChange]);
+  }, [onBottomChange, requestOlder]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -136,27 +242,20 @@ function MessageListInner(
     };
   }, []);
 
-  const messageIndexById = useMemo(() => {
-    const map = new Map<string, number>();
-    messages.forEach((message, index) => {
-      map.set(message.id, index);
-    });
-    return map;
-  }, [messages]);
-
   const handleReplyNavigate = useCallback(
     (targetMessageId: string) => {
-      const targetIndex = messageIndexById.get(targetMessageId);
+      const targetIndex = messageIndexByIdRef.current.get(targetMessageId);
       if (targetIndex === undefined) {
         return;
       }
 
-      virtualizer.scrollToIndex(targetIndex, {
-        align: "center",
-        behavior: "smooth",
-      });
+      const currentStart = visibleStartIndexRef.current;
+      const currentEnd = currentStart + WINDOW_SIZE - 1;
+      if (targetIndex < currentStart || targetIndex > currentEnd) {
+        updateVisibleStartIndex(Math.max(0, targetIndex - Math.floor(WINDOW_SIZE / 2)));
+      }
 
-      window.setTimeout(() => {
+      window.requestAnimationFrame(() => {
         const targetElement = document.getElementById(`message-${targetMessageId}`);
         if (!targetElement) {
           return;
@@ -167,9 +266,14 @@ function MessageListInner(
         window.setTimeout(() => {
           targetElement.classList.remove("ring-2", "ring-amber-300/70", "bg-amber-100/10", "rounded-2xl", "transition-colors");
         }, 1400);
-      }, 220);
+      });
     },
-    [messageIndexById, virtualizer],
+    [updateVisibleStartIndex],
+  );
+
+  const visibleMessages = useMemo(
+    () => messages.slice(visibleStartIndex, visibleStartIndex + WINDOW_SIZE),
+    [messages, visibleStartIndex],
   );
 
   const connectionLabel =
@@ -185,7 +289,7 @@ function MessageListInner(
         <span className="truncate">{connectionLabel}</span>
         <button
           type="button"
-          onClick={() => void onLoadOlder()}
+          onClick={() => void requestOlder()}
           disabled={!hasMore || loadingOlder}
           className="rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-white/85 shadow-[0_10px_18px_rgba(0,0,0,0.16)] transition hover:border-white/18 hover:bg-white/10 disabled:cursor-default disabled:opacity-45"
         >
@@ -219,34 +323,19 @@ function MessageListInner(
         </div>
       ) : (
         <div ref={scrollParentRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-4.5">
-          <div
-            className="relative w-full"
-            style={{
-              height: `${virtualizer.getTotalSize()}px`,
-            }}
-          >
-            {virtualizer.getVirtualItems().map((virtualItem) => {
-              const message = messages[virtualItem.index];
-              if (!message) {
-                return null;
-              }
-
-              const previousMessage = messages[virtualItem.index - 1] ?? null;
-              const nextMessage = messages[virtualItem.index + 1] ?? null;
+          {visibleMessages.map((message, index) => {
+              const absoluteIndex = visibleStartIndex + index;
+              const previousMessage = messages[absoluteIndex - 1] ?? null;
+              const nextMessage = messages[absoluteIndex + 1] ?? null;
               const isGroupedWithPrevious = Boolean(previousMessage && previousMessage.sender === message.sender);
               const isGroupedWithNext = Boolean(nextMessage && nextMessage.sender === message.sender);
 
               return (
                 <div
                   key={message.id}
-                  ref={virtualizer.measureElement}
                   id={`message-${message.id}`}
-                  data-index={virtualItem.index}
-                  className="absolute left-0 top-0 w-full px-1 py-2"
-                  style={{
-                    contain: "layout paint style",
-                    transform: `translateY(${virtualItem.start}px)`,
-                  }}
+                  data-index={absoluteIndex}
+                  className="w-full px-1 py-2"
                 >
                   <MessageBubble
                     deliveryState={
@@ -270,7 +359,6 @@ function MessageListInner(
                 </div>
               );
             })}
-          </div>
 
           {typingUser ? (
             <div className="px-2 pt-3">

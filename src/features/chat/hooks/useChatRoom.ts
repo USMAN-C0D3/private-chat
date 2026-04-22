@@ -22,6 +22,7 @@ export type ConnectionState = "connecting" | "connected" | "disconnected";
 const MESSAGE_FLUSH_BATCH_SIZE = 1200;
 const CHAT_BOOTSTRAP_RETRY_COUNT = 2;
 const CHAT_BOOTSTRAP_RETRY_DELAY_MS = 600;
+const MAX_MESSAGES = 40000;
 
 
 function generateClientId() {
@@ -65,7 +66,11 @@ function integrateMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
   }
 
   if (existing.length === 0) {
-    return incoming.slice().sort((left, right) => left.sequence - right.sequence);
+    const sorted = incoming.slice().sort((left, right) => left.sequence - right.sequence);
+    if (sorted.length > MAX_MESSAGES) {
+      return sorted.slice(-MAX_MESSAGES);
+    }
+    return sorted;
   }
 
   const merged = existing.slice();
@@ -75,8 +80,22 @@ function integrateMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
       .filter((message) => message.clientId)
       .map((message, index) => [message.clientId as string, index]),
   );
+  const incomingById = new Set<string>();
+  const incomingByClientId = new Set<string>();
+  const newMessages: ChatMessage[] = [];
 
   for (const message of incoming) {
+    if (incomingById.has(message.id)) {
+      continue;
+    }
+    incomingById.add(message.id);
+    if (message.clientId) {
+      if (incomingByClientId.has(message.clientId)) {
+        continue;
+      }
+      incomingByClientId.add(message.clientId);
+    }
+
     const directIndex = byId.get(message.id);
     if (directIndex !== undefined) {
       merged[directIndex] = {
@@ -102,10 +121,38 @@ function integrateMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
     if (message.clientId) {
       byClientId.set(message.clientId, merged.length);
     }
-    merged.push(message);
+    newMessages.push(message);
   }
 
-  merged.sort((left, right) => left.sequence - right.sequence);
+  if (newMessages.length > 0) {
+    newMessages.sort((left, right) => left.sequence - right.sequence);
+    const firstNewSequence = newMessages[0]?.sequence;
+    const lastNewSequence = newMessages[newMessages.length - 1]?.sequence;
+    const firstExistingSequence = merged[0]?.sequence;
+    const lastExistingSequence = merged[merged.length - 1]?.sequence;
+
+    if (
+      firstNewSequence !== undefined
+      && lastExistingSequence !== undefined
+      && firstNewSequence >= lastExistingSequence
+    ) {
+      merged.push(...newMessages);
+    } else if (
+      lastNewSequence !== undefined
+      && firstExistingSequence !== undefined
+      && lastNewSequence <= firstExistingSequence
+    ) {
+      merged.unshift(...newMessages);
+    } else {
+      merged.push(...newMessages);
+      merged.sort((left, right) => left.sequence - right.sequence);
+    }
+  }
+
+  if (merged.length > MAX_MESSAGES) {
+    return merged.slice(-MAX_MESSAGES);
+  }
+
   return merged;
 }
 
